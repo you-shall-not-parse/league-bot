@@ -48,6 +48,13 @@ SCHEDULED_EVENT_CHANNEL_ID: Optional[int] = None
 FIXTURE_RETENTION_AFTER_START = timedelta(hours=8)
 CORE_REMINDER_INTERVAL = timedelta(days=7)
 
+# Roles included in every weekly fixture-thread reminder in addition to the
+# two participating clan roles.
+WEEKLY_REMINDER_ROLE_IDS: tuple[int, ...] = (
+	1462383096019157149,
+	1463079012711792786,
+)
+
 
 
 # Maps and midpoints (edit these lists)
@@ -1043,8 +1050,12 @@ async def _maybe_send_core_agreement_reminder(client: discord.Client, s: Fixture
 		for clan in (s.clan_a, s.clan_b):
 			role = _clan_role(thread.guild, clan)
 			mentions.append(role.mention if role is not None else clan)
+		for role_id in WEEKLY_REMINDER_ROLE_IDS:
+			role = thread.guild.get_role(role_id)
+			mentions.append(role.mention if role is not None else f"<@&{role_id}>")
 	else:
 		mentions.extend([s.clan_a, s.clan_b])
+		mentions.extend(f"<@&{role_id}>" for role_id in WEEKLY_REMINDER_ROLE_IDS)
 
 	missing_text = ", ".join(missing)
 	window = _format_round_window(s.round_no)
@@ -1054,7 +1065,8 @@ async def _maybe_send_core_agreement_reminder(client: discord.Client, s: Fixture
 		await thread.send(
 			f"Weekly reminder for {' and '.join(mentions)}: {division_line}Round {s.round_no} still needs agreement on {missing_text}."
 			+ (f" Round window: {window}." if window else "")
-			+ f" Fixture organiser: {organiser_link}"
+			+ f" Fixture organiser: {organiser_link}",
+			allowed_mentions=discord.AllowedMentions(everyone=False, users=False, roles=True),
 		)
 	except Exception:
 		return False
