@@ -47,6 +47,7 @@ LEADERBOARD_UPDATE_COOLDOWN_SECONDS: float = 1200.0  # 20 minutes, adjust as nee
 IMAGE_TEMPLATE_PATH: str = os.path.join(os.path.dirname(__file__), "scoreboardblank2.png")
 DIVISION_IMAGE_TEMPLATE_PATH: str = os.path.join(os.path.dirname(__file__), "scoreboard_blank1.jpg")
 FONT_PATH: str = os.path.join(os.path.dirname(__file__), "scoreboard_font.ttf")
+CLAN_LOGOS_PATH: str = os.path.join(os.path.dirname(__file__), "clan_logos")
 
 # Left-to-right panel order in scoreboardblank2.png.
 LEADERBOARD_PANELS: tuple[str, ...] = ("Allied Division", "Axis Division")
@@ -1033,6 +1034,27 @@ class ScoreboardCog(commands.Cog):
 					return font
 			return _font(minimum)
 
+		# Resolve logos once per render. Matching is case-insensitive on Linux and
+		# supports the usual web image formats. Transparent PNGs work best.
+		logo_paths: dict[str, str] = {}
+		if os.path.isdir(CLAN_LOGOS_PATH):
+			for filename in os.listdir(CLAN_LOGOS_PATH):
+				stem, extension = os.path.splitext(filename)
+				if extension.lower() in {".png", ".jpg", ".jpeg", ".webp"}:
+					logo_paths.setdefault(stem.casefold(), os.path.join(CLAN_LOGOS_PATH, filename))
+
+		def _load_logo(clan_name: str, max_size: int) -> Optional[Image.Image]:
+			path = logo_paths.get(clan_name.casefold())
+			if not path:
+				return None
+			try:
+				logo = Image.open(path).convert("RGBA")
+				logo.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
+				return logo
+			except Exception:
+				log.exception("Could not load clan logo %s", path)
+				return None
+
 		text_fill = (37, 34, 27, 255)
 		outer_margin = int(w * 0.035)
 		panel_gap = int(w * 0.025)
@@ -1071,7 +1093,8 @@ class ScoreboardCog(commands.Cog):
 			header_size = max(14, int(row_size * 0.82))
 
 			col_index = left + inner
-			col_name = left + int(panel_width * 0.13)
+			col_logo = left + int(panel_width * 0.135)
+			col_name = left + int(panel_width * 0.19)
 			numeric_left = left + int(panel_width * 0.59)
 			numeric_width = right - inner - numeric_left
 			segment = numeric_width / 4
@@ -1090,6 +1113,11 @@ class ScoreboardCog(commands.Cog):
 					break
 				name = str(row["name"])
 				draw.text((col_index, y), str(position), font=row_font, fill=text_fill, anchor="la")
+				logo = _load_logo(name, max(24, int(row_height * 0.58)))
+				if logo is not None:
+					logo_x = col_logo - logo.width // 2
+					logo_y = y + row_size // 2 - logo.height // 2
+					base.alpha_composite(logo, (logo_x, logo_y))
 				draw.text((col_name, y), name, font=_fit(name, name_width, row_size), fill=text_fill, anchor="la")
 				values = (row["score"], row["w"], row["l"], int(row["w"]) + int(row["l"]))
 				for x, value in zip(numeric_columns, values):
