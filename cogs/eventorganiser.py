@@ -47,6 +47,10 @@ SCHEDULED_EVENT_CHANNEL_ID: Optional[int] = None
 # Remove completed fixtures and their scheduled events some hours after kickoff.
 FIXTURE_RETENTION_AFTER_START = timedelta(hours=8)
 CORE_REMINDER_INTERVAL = timedelta(days=7)
+SCORE_REMINDER_DELAY_AFTER_EVENT = timedelta(hours=2)
+SCORE_REMINDER_CHANNEL_ID = 1462382488784470181
+SCOREBOARD_STATE_PATH = data_path("scoreboard.json")
+SCORE_REMINDER_LOCK = asyncio.Lock()
 
 # Roles included in every weekly fixture-thread reminder in addition to the
 # two participating clan roles.
@@ -324,6 +328,7 @@ class FixtureState:
 	scheduled_event_id: Optional[int] = None
 	streamer_ping_message_id: Optional[int] = None
 	last_core_reminder_at: Optional[str] = None
+	score_reminder_sent_at: Optional[str] = None
 
 	@property
 	def key(self) -> str:
@@ -373,6 +378,7 @@ def _state_to_dict(s: FixtureState) -> dict[str, Any]:
 		"scheduled_event_id": s.scheduled_event_id,
 		"streamer_ping_message_id": s.streamer_ping_message_id,
 		"last_core_reminder_at": s.last_core_reminder_at,
+		"score_reminder_sent_at": s.score_reminder_sent_at,
 	}
 
 
@@ -419,6 +425,7 @@ def _dict_to_state(d: dict[str, Any]) -> FixtureState:
 		scheduled_event_id=d.get("scheduled_event_id"),
 		streamer_ping_message_id=d.get("streamer_ping_message_id"),
 		last_core_reminder_at=d.get("last_core_reminder_at"),
+		score_reminder_sent_at=d.get("score_reminder_sent_at"),
 	)
 
 
@@ -1078,6 +1085,106 @@ async def _maybe_send_core_agreement_reminder(client: discord.Client, s: Fixture
 	return True
 
 
+def _fixture_end_utc(s: FixtureState) -> Optional[datetime]:
+	if not s.agreed_datetime_utc:
+		return None
+	try:
+		start = datetime.fromisoformat(s.agreed_datetime_utc)
+		if start.tzinfo is None:
+			start = start.replace(tzinfo=timezone.utc)
+		return start.astimezone(timezone.utc) + timedelta(hours=2)
+	except Exception:
+		return None
+
+
+def _fixture_has_score_submission(s: FixtureState, *, event_end: datetime) -> bool:
+	"""Return true once either clan has submitted this fixture's score."""
+	try:
+		with open(SCOREBOARD_STATE_PATH, "r", encoding="utf-8") as file:
+			scoreboard_state = json.load(file)
+	except FileNotFoundError:
+		return False
+	except Exception:
+		return False
+
+	role_a = CLAN_ROLE_IDS.get(s.clan_a)
+	role_b = CLAN_ROLE_IDS.get(s.clan_b)
+	if not role_a or not role_b:
+		return False
+	target_roles = {int(role_a), int(role_b)}
+	for raw_match in scoreboard_state.get("pending_matches", {}).values():
+		if not isinstance(raw_match, dict):
+			continue
+		try:
+			match_roles = {
+				int(raw_match.get("submitter_clan_role_id", 0)),
+				int(raw_match.get("opponent_clan_role_id", 0)),
+			}
+			created = datetime.fromisoformat(str(raw_match.get("created_at") or ""))
+			if created.tzinfo is None:
+				created = created.replace(tzinfo=timezone.utc)
+		except Exception:
+			continue
+		# Accept pending, confirmed, or disputed submissions made from the start
+		# of this event onward. Old results for the same pairing do not count.
+		if match_roles == target_roles and created.astimezone(timezone.utc) >= event_end - timedelta(hours=2):
+			return True
+	return False
+
+
+async def _maybe_send_score_submission_reminder(client: discord.Client, s: FixtureState) -> bool:
+	async with SCORE_REMINDER_LOCK:
+		# Re-read the persisted marker because the hourly reminder loop and the
+		# expiry cleanup task can become due at the same time after a restart.
+		state = _load_state()
+		current_raw = state.get("threads", {}).get(s.key)
+		if isinstance(current_raw, dict) and current_raw.get("score_reminder_sent_at"):
+			return False
+		return await _send_score_submission_reminder_unlocked(client, s, state)
+
+
+async def _send_score_submission_reminder_unlocked(
+	client: discord.Client,
+	s: FixtureState,
+	state: dict[str, Any],
+) -> bool:
+	if s.score_reminder_sent_at:
+		return False
+	event_end = _fixture_end_utc(s)
+	if event_end is None or datetime.now(timezone.utc) < event_end + SCORE_REMINDER_DELAY_AFTER_EVENT:
+		return False
+	if _fixture_has_score_submission(s, event_end=event_end):
+		return False
+
+	channel = client.get_channel(SCORE_REMINDER_CHANNEL_ID)
+	if channel is None:
+		try:
+			channel = await client.fetch_channel(SCORE_REMINDER_CHANNEL_ID)
+		except Exception:
+			return False
+	if not isinstance(channel, discord.TextChannel):
+		return False
+
+	role_mentions: list[str] = []
+	for clan in (s.clan_a, s.clan_b):
+		role = _clan_role(channel.guild, clan)
+		role_mentions.append(role.mention if role is not None else clan)
+	try:
+		await channel.send(
+			f"Score submission reminder for {' and '.join(role_mentions)}: your {s.clan_a} vs {s.clan_b} "
+			f"Round {s.round_no} fixture ended more than two hours ago and no score has been submitted yet. "
+			"Please submit the result using the score submission panel.",
+			allowed_mentions=discord.AllowedMentions(everyone=False, users=False, roles=True),
+		)
+	except Exception:
+		return False
+
+	s.score_reminder_sent_at = datetime.now(timezone.utc).isoformat()
+	state.get("threads", {})[s.key] = _state_to_dict(s)
+	_save_state(state)
+	return True
+
+
 async def _prune_expired_fixture_state(bot: commands.Bot) -> None:
 	state = _load_state()
 	threads = state.get("threads", {})
@@ -1094,6 +1201,12 @@ async def _prune_expired_fixture_state(bot: commands.Bot) -> None:
 		s = _dict_to_state(raw)
 		if not _fixture_expired(s, now=now):
 			continue
+		# Do one final submission check before removing old fixture state. This
+		# prevents an overdue reminder being lost if the bot was offline earlier.
+		try:
+			await _maybe_send_score_submission_reminder(bot, s)
+		except Exception:
+			pass
 		if guild is not None and s.scheduled_event_id:
 			ev = await _fetch_scheduled_event(guild, int(s.scheduled_event_id))
 			if ev is not None:
@@ -2122,7 +2235,7 @@ class EventOrganiser(commands.Cog):
 	async def before_cleanup_expired_fixtures(self):
 		await self.bot.wait_until_ready()
 
-	@tasks.loop(hours=24)
+	@tasks.loop(hours=1)
 	async def send_fixture_reminders(self):
 		state = _load_state()
 		threads = state.get("threads", {})
@@ -2132,10 +2245,10 @@ class EventOrganiser(commands.Cog):
 			if not isinstance(raw, dict):
 				continue
 			s = _dict_to_state(raw)
-			if _fixture_expired(s):
-				continue
 			try:
-				await _maybe_send_core_agreement_reminder(self.bot, s)
+				if not _fixture_expired(s):
+					await _maybe_send_core_agreement_reminder(self.bot, s)
+				await _maybe_send_score_submission_reminder(self.bot, s)
 			except Exception:
 				continue
 
