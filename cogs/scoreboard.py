@@ -31,11 +31,8 @@ SCOREBOARD_CHANNEL_ID: int = 1462387812815998997
 # Channel where results are posted for confirmation by the opposing clan
 VALIDATION_CHANNEL_ID: int = 1462382488784470181
 
-# Channels where the division leaderboards + match images are posted
-LEADERBOARD_CHANNEL_IDS: dict[str, int] = {
-	"Axis Division": 1462384116376014911,
-	"Allied Division": 1521924084588609696,
-}
+# Both independent division tables are displayed together in this channel.
+LEADERBOARD_CHANNEL_ID: int = 1462384116376014911
 
 # Role IDs for each clan (name -> role_id)
 # Source of truth is league_config.py
@@ -47,8 +44,12 @@ CLAN_ROLES: dict[str, int] = dict(CLAN_ROLE_IDS)
 LEADERBOARD_UPDATE_COOLDOWN_SECONDS: float = 1200.0  # 20 minutes, adjust as needed
 
 # Image/font assets
-IMAGE_TEMPLATE_PATH: str = os.path.join(os.path.dirname(__file__), "scoreboard_blank1.jpg")
+IMAGE_TEMPLATE_PATH: str = os.path.join(os.path.dirname(__file__), "scoreboardblank2.png")
+DIVISION_IMAGE_TEMPLATE_PATH: str = os.path.join(os.path.dirname(__file__), "scoreboard_blank1.jpg")
 FONT_PATH: str = os.path.join(os.path.dirname(__file__), "scoreboard_font.ttf")
+
+# Left-to-right panel order in scoreboardblank2.png.
+LEADERBOARD_PANELS: tuple[str, ...] = ("Allied Division", "Axis Division")
 
 
 log = logging.getLogger(__name__)
@@ -227,7 +228,7 @@ def _build_leaderboard_text(stats: dict[str, Any]) -> str:
 def _build_scoreboard_embed() -> discord.Embed:
 	embed = discord.Embed(
 		title="Submit Match Scores",
-		description="- Click the button below to submit a match result for validation by the opposing clan. \n - It will then post a submission in <#1462382488784470181> for the opposing side to confirm \n - When confirmed the division league tables update in <#1462384116376014911> and <#1521924084588609696>; this may queue and take up to 5-10 mins \n - Make sure you have linked the relevant announcement channel as a feed in your clan discord or just copy and paste the table if you prefer",
+		description="- Click the button below to submit a match result for validation by the opposing clan. \n - It will then post a submission in <#1462382488784470181> for the opposing side to confirm \n - When confirmed both division league tables update together in <#1462384116376014911>; the refresh may be queued briefly \n - Make sure you have linked the leaderboard channel as a feed in your clan discord or just copy and paste the table if you prefer",
 		colour=discord.Colour.green(),
 	)
 	return embed
@@ -299,6 +300,7 @@ class ScoreboardStore:
 			self.data.setdefault("leaderboard_message_id", None)
 			self.data.setdefault("leaderboard_message_ids", {})
 			self.data.setdefault("last_result", None)
+			self.data.setdefault("last_results", {})
 			self.data.setdefault("clan_stats", {})
 			self.data.setdefault("pending_matches", {})  # match_id -> match dict
 			self.data.setdefault("pending_by_validation_message", {})  # message_id(str) -> match_id
@@ -311,6 +313,21 @@ class ScoreboardStore:
 			legacy_message_id = self.data.get("leaderboard_message_id")
 			if legacy_message_id and not message_ids.get("Axis Division"):
 				message_ids["Axis Division"] = legacy_message_id
+			if not legacy_message_id:
+				self.data["leaderboard_message_id"] = next(
+					(message_id for message_id in message_ids.values() if message_id),
+					None,
+				)
+
+			last_results = self.data.get("last_results")
+			if not isinstance(last_results, dict):
+				last_results = {}
+				self.data["last_results"] = last_results
+			legacy_result = self.data.get("last_result")
+			if isinstance(legacy_result, dict):
+				legacy_division = _division_for_clan_name(str(legacy_result.get("a_name") or ""))
+				if legacy_division:
+					last_results.setdefault(legacy_division, legacy_result)
 			await self._ensure_clans_locked()
 
 	async def save(self) -> None:
@@ -350,14 +367,18 @@ class ScoreboardStore:
 			entry.setdefault("maps_for", 0)
 			entry.setdefault("maps_against", 0)
 
-		# If the latest-result line references a removed clan, clear it so it won't render.
-		last = self.data.get("last_result")
-		if isinstance(last, dict):
-			allowed_names = set(CLAN_ROLES.keys())
-			a_name = str(last.get("a_name") or "")
-			b_name = str(last.get("b_name") or "")
-			if a_name not in allowed_names or b_name not in allowed_names:
-				self.data["last_result"] = None
+		# Clear only invalid per-division latest results.
+		allowed_names = set(CLAN_ROLES.keys())
+		last_results = self.data.setdefault("last_results", {})
+		if isinstance(last_results, dict):
+			for division, last in list(last_results.items()):
+				if not isinstance(last, dict):
+					last_results.pop(division, None)
+					continue
+				a_name = str(last.get("a_name") or "")
+				b_name = str(last.get("b_name") or "")
+				if a_name not in allowed_names or b_name not in allowed_names:
+					last_results.pop(division, None)
 
 	async def ensure_clans(self) -> None:
 		async with self._lock:
@@ -456,7 +477,7 @@ class ScoreboardStore:
 				a["l"] = int(a.get("l", 0)) + 1
 
 			self.data["clan_stats"] = stats
-			self.data["last_result"] = {
+			result = {
 				"match_id": match.match_id,
 				"a_name": _role_name_from_id(match.submitter_clan_role_id),
 				"b_name": _role_name_from_id(match.opponent_clan_role_id),
@@ -464,6 +485,10 @@ class ScoreboardStore:
 				"b_score": match.opponent_score,
 				"at": _utcnow_iso(),
 			}
+			division = _division_for_role_id(match.submitter_clan_role_id)
+			if division:
+				self.data.setdefault("last_results", {})[division] = result
+			self.data["last_result"] = result
 
 		await self.save()
 		return match
@@ -899,61 +924,54 @@ class ScoreboardCog(commands.Cog):
 					await asyncio.sleep(sleep_time)
 
 				try:
-					message_ids = self.store.data.setdefault("leaderboard_message_ids", {})
-					updated_messages: dict[str, Any] = {}
-					for division, channel_id in LEADERBOARD_CHANNEL_IDS.items():
-						if channel_id == 0:
-							continue
-						channel = self.bot.get_channel(channel_id)
-						if channel is None:
-							try:
-								channel = await self.bot.fetch_channel(channel_id)
-							except Exception:
-								log.exception("Failed to fetch leaderboard channel for %s", division)
-								continue
-						if not isinstance(channel, discord.TextChannel):
-							continue
+					if LEADERBOARD_CHANNEL_ID == 0:
+						return
+					channel = self.bot.get_channel(LEADERBOARD_CHANNEL_ID)
+					if channel is None:
+						try:
+							channel = await self.bot.fetch_channel(LEADERBOARD_CHANNEL_ID)
+						except Exception:
+							log.exception("Failed to fetch combined leaderboard channel")
+							return
+					if not isinstance(channel, discord.TextChannel):
+						log.error("Leaderboard channel %s is not a text channel", LEADERBOARD_CHANNEL_ID)
+						return
 
-						message_id = message_ids.get(division)
-						image_path = await self._render_scoreboard_image(division)
-						filename = os.path.basename(image_path)
+					message_id = self.store.data.get("leaderboard_message_id")
+					image_path = await self._render_scoreboard_image()
+					filename = os.path.basename(image_path)
 
-						def _make_file() -> discord.File:
-							return discord.File(image_path, filename=filename)
+					def _make_file() -> discord.File:
+						return discord.File(image_path, filename=filename)
 
-						file = _make_file()
-						embed = discord.Embed(
-							title=f"{division} Scoreboard",
-							colour=discord.Colour.blurple(),
-							timestamp=datetime.now(timezone.utc),
-						)
-						embed.set_image(url=f"attachment://{filename}")
-						content = ""
+					embed = discord.Embed(
+						title="League Leaderboards",
+						colour=discord.Colour.blurple(),
+						timestamp=datetime.now(timezone.utc),
+					)
+					embed.set_image(url=f"attachment://{filename}")
 
-						if message_id:
-							try:
-								msg = await channel.fetch_message(int(message_id))
-								await msg.edit(content=content, embed=embed, attachments=[file])
-							except discord.NotFound:
-								message_ids[division] = None
-								await self.store.save()
-								file = _make_file()
-								msg = await channel.send(content=content, embed=embed, file=file)
-								message_ids[division] = msg.id
-								await self.store.save()
-						else:
-							msg = await channel.send(content=content, embed=embed, file=file)
-							message_ids[division] = msg.id
+					if message_id:
+						try:
+							msg = await channel.fetch_message(int(message_id))
+							await msg.edit(content="", embed=embed, attachments=[_make_file()])
+						except discord.NotFound:
+							self.store.data["leaderboard_message_id"] = None
 							await self.store.save()
-
-						updated_messages[division] = message_ids.get(division)
+							msg = await channel.send(content="", embed=embed, file=_make_file())
+							self.store.data["leaderboard_message_id"] = msg.id
+							await self.store.save()
+					else:
+						msg = await channel.send(content="", embed=embed, file=_make_file())
+						self.store.data["leaderboard_message_id"] = msg.id
+						await self.store.save()
 
 					# Only mark the timestamp after a successful update pass.
 					self._last_leaderboard_update_ts = asyncio.get_running_loop().time()
 					self._leaderboard_rate_limited_until_ts = 0.0
 					log.info(
-						"Leaderboards updated messages=%s requests=%s",
-						updated_messages,
+						"Combined leaderboard updated message=%s requests=%s",
+						self.store.data.get("leaderboard_message_id"),
 						self._leaderboard_update_request_count,
 					)
 				except discord.HTTPException as e:
@@ -988,15 +1006,108 @@ class ScoreboardCog(commands.Cog):
 				continue
 			break
 
-	async def _render_scoreboard_image(self, division: str) -> str:
-		"""Render the scoreboard onto the provided template image."""
-		from PIL import Image, ImageDraw, ImageFont  # pillow
+	async def _render_scoreboard_image(self) -> str:
+		"""Render both independent division tables onto the supplied artwork."""
+		from PIL import Image, ImageDraw, ImageFont
 
 		if os.path.exists(IMAGE_TEMPLATE_PATH):
 			base = Image.open(IMAGE_TEMPLATE_PATH).convert("RGBA")
 		else:
+			log.warning("Combined scoreboard template not found at %s", IMAGE_TEMPLATE_PATH)
+			base = Image.new("RGBA", (1448, 1086), (196, 184, 158, 255))
+
+		w, h = base.size
+		draw = ImageDraw.Draw(base)
+
+		def _font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+			try:
+				return ImageFont.truetype(FONT_PATH, size)
+			except Exception:
+				return ImageFont.load_default()
+
+		def _fit(text: str, max_width: int, start: int, minimum: int = 13):
+			for size in range(start, minimum - 1, -2):
+				font = _font(size)
+				bbox = draw.textbbox((0, 0), text, font=font)
+				if bbox[2] - bbox[0] <= max_width:
+					return font
+			return _font(minimum)
+
+		text_fill = (37, 34, 27, 255)
+		outer_margin = int(w * 0.035)
+		panel_gap = int(w * 0.025)
+		panel_width = (w - 2 * outer_margin - panel_gap) // 2
+		panel_top = int(h * 0.185)
+		panel_bottom = int(h * 0.715)
+
+		for panel_index, division in enumerate(LEADERBOARD_PANELS):
+			left = outer_margin + panel_index * (panel_width + panel_gap)
+			right = left + panel_width
+			center_x = (left + right) // 2
+			inner = int(panel_width * 0.055)
+
+			caption_font = _font(max(16, int(h * 0.024)))
+			draw.text((center_x, panel_top), "LATEST RESULT", font=caption_font, fill=text_fill, anchor="ma")
+			last = _last_result_for_division(self.store.data.get("last_results", {}).get(division), division)
+			if isinstance(last, dict):
+				result_text = (
+					f"{last.get('a_name', '')}  {int(last.get('a_score', 0))} - "
+					f"{int(last.get('b_score', 0))}  {last.get('b_name', '')}"
+				)
+			else:
+				result_text = "NO RESULTS YET"
+			result_font = _fit(result_text, panel_width - 2 * inner, max(24, int(h * 0.038)), 15)
+			draw.text((center_x, panel_top + int(h * 0.055)), result_text, font=result_font, fill=text_fill, anchor="ma")
+
+			rows = _sorted_leaderboard_rows(
+				_stats_for_division(self.store.data.get("clan_stats", {}), division),
+			)
+			table_top = panel_top + int(h * 0.14)
+			header_gap = int(h * 0.045)
+			row_count = max(1, len(rows))
+			row_height = max(30, int((panel_bottom - table_top - header_gap) / row_count))
+			row_size = max(18, min(32, int(row_height * 0.38)))
+			row_font = _font(row_size)
+			header_size = max(14, int(row_size * 0.82))
+
+			col_index = left + inner
+			col_name = left + int(panel_width * 0.13)
+			numeric_left = left + int(panel_width * 0.59)
+			numeric_width = right - inner - numeric_left
+			segment = numeric_width / 4
+			numeric_columns = [int(numeric_left + segment * n) for n in (0.5, 1.5, 2.5, 3.5)]
+			name_width = numeric_left - col_name - int(panel_width * 0.025)
+
+			draw.text((col_index, table_top), "#", font=_font(header_size), fill=text_fill, anchor="la")
+			draw.text((col_name, table_top), "CLAN", font=_font(header_size), fill=text_fill, anchor="la")
+			for x, heading in zip(numeric_columns, ("SCORE", "W", "L", "MP")):
+				heading_font = _fit(heading, int(segment * 0.82), header_size, 11)
+				draw.text((x, table_top), heading, font=heading_font, fill=text_fill, anchor="ma")
+
+			for position, row in enumerate(rows, start=1):
+				y = table_top + header_gap + row_height * (position - 1)
+				if y + row_height > panel_bottom + 2:
+					break
+				name = str(row["name"])
+				draw.text((col_index, y), str(position), font=row_font, fill=text_fill, anchor="la")
+				draw.text((col_name, y), name, font=_fit(name, name_width, row_size), fill=text_fill, anchor="la")
+				values = (row["score"], row["w"], row["l"], int(row["w"]) + int(row["l"]))
+				for x, value in zip(numeric_columns, values):
+					draw.text((x, y), str(int(value)), font=row_font, fill=text_fill, anchor="ma")
+
+		out_path = data_path("scoreboard_rendered_combined.png")
+		base.save(out_path, format="PNG")
+		return out_path
+
+	async def _render_division_scoreboard_image(self, division: str) -> str:
+		"""Render the scoreboard onto the provided template image."""
+		from PIL import Image, ImageDraw, ImageFont  # pillow
+
+		if os.path.exists(DIVISION_IMAGE_TEMPLATE_PATH):
+			base = Image.open(DIVISION_IMAGE_TEMPLATE_PATH).convert("RGBA")
+		else:
 			# Fallback so the bot keeps working even if the template is missing.
-			log.warning("Scoreboard template image not found at %s", IMAGE_TEMPLATE_PATH)
+			log.warning("Scoreboard template image not found at %s", DIVISION_IMAGE_TEMPLATE_PATH)
 			base = Image.new("RGBA", (1080, 1920), (16, 18, 24, 255))
 
 		w, h = base.size
@@ -1239,9 +1350,6 @@ class ScoreboardCog(commands.Cog):
 			log.exception("Failed updating disputed message")
 		await interaction.followup.send("Marked as disputed.", ephemeral=True)
 
-	# (No Pillow rendering: leaderboard uses the static IMAGE_TEMPLATE_PATH)
-
-
 	def _admin_check(self, interaction: discord.Interaction) -> bool:
 		if not isinstance(interaction.user, discord.Member):
 			return False
@@ -1266,6 +1374,7 @@ class ScoreboardCog(commands.Cog):
 			last_division = _division_for_clan_name(str(last.get("a_name") or ""))
 			if last_division == division:
 				self.store.data["last_result"] = None
+		self.store.data.setdefault("last_results", {}).pop(division, None)
 
 
 	@app_commands.guilds(discord.Object(id=GUILD_ID))
@@ -1379,7 +1488,7 @@ class ScoreboardCog(commands.Cog):
 		self.store.data["pending_matches"][match.match_id] = match.to_dict()
 
 		# Update last_result to this edited match
-		self.store.data["last_result"] = {
+		result = {
 			"match_id": match.match_id,
 			"a_name": _role_name_from_id(match.submitter_clan_role_id),
 			"b_name": _role_name_from_id(match.opponent_clan_role_id),
@@ -1387,6 +1496,10 @@ class ScoreboardCog(commands.Cog):
 			"b_score": match.opponent_score,
 			"at": _utcnow_iso(),
 		}
+		division = _division_for_role_id(match.submitter_clan_role_id)
+		if division:
+			self.store.data.setdefault("last_results", {})[division] = result
+		self.store.data["last_result"] = result
 
 		await self.store.save()
 		await self.ensure_leaderboard_message()
@@ -1421,7 +1534,7 @@ class ScoreboardCog(commands.Cog):
 			await interaction.followup.send(str(e), ephemeral=True)
 			return
 
-		self.store.data["last_result"] = {
+		result = {
 			"match_id": "manual",
 			"a_name": _role_name_from_id(clan_a.id),
 			"b_name": _role_name_from_id(clan_b.id),
@@ -1429,6 +1542,8 @@ class ScoreboardCog(commands.Cog):
 			"b_score": b,
 			"at": _utcnow_iso(),
 		}
+		self.store.data.setdefault("last_results", {})[division.value] = result
+		self.store.data["last_result"] = result
 		await self.store.save()
 		await self.ensure_leaderboard_message()
 		await interaction.followup.send(f"Set {division.value} latest result to {_role_name_from_id(clan_a.id)} {a}-{b} {_role_name_from_id(clan_b.id)}.", ephemeral=True)
@@ -1453,7 +1568,7 @@ class ScoreboardCog(commands.Cog):
 		await interaction.response.defer(ephemeral=True)
 		# Clear stored message ids so the next update sends fresh messages.
 		self.store.data["leaderboard_message_id"] = None
-		self.store.data["leaderboard_message_ids"] = {division: None for division in LEADERBOARD_CHANNEL_IDS.keys()}
+		self.store.data["leaderboard_message_ids"] = {}
 		await self.store.save()
 
 		# Best-effort: bypass the local cooldown so admins can repost immediately.
@@ -1461,7 +1576,7 @@ class ScoreboardCog(commands.Cog):
 		self._leaderboard_rate_limited_until_ts = 0.0
 
 		await self.ensure_leaderboard_message()
-		await interaction.followup.send("Queued fresh leaderboard reposts for both divisions.", ephemeral=True)
+		await interaction.followup.send("Queued a fresh combined leaderboard repost.", ephemeral=True)
 
 	@app_commands.guilds(discord.Object(id=GUILD_ID))
 	@app_commands.command(name="scoreboard_division_reset", description="Admin: reset a selected division leaderboard or both")
@@ -1484,6 +1599,7 @@ class ScoreboardCog(commands.Cog):
 				}
 			self.store.data["clan_stats"] = stats
 			self.store.data["last_result"] = None
+			self.store.data["last_results"] = {}
 			self.store.data["pending_matches"] = {}
 			self.store.data["pending_by_validation_message"] = {}
 		else:
@@ -1507,11 +1623,6 @@ class ScoreboardCog(commands.Cog):
 						kept_validation_links[str(validation_message_id)] = str(match_id)
 				self.store.data["pending_matches"] = kept_matches
 				self.store.data["pending_by_validation_message"] = kept_validation_links
-		self.store.data["leaderboard_message_ids"] = {
-			division: self.store.data.get("leaderboard_message_ids", {}).get(division)
-			for division in LEADERBOARD_CHANNEL_IDS.keys()
-		}
-
 		await self.store.save()
 		await self.ensure_leaderboard_message()
 		label = "all divisions" if division.value == "ALL" else division.value
