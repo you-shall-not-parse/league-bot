@@ -663,6 +663,10 @@ class SubmitFlowView(discord.ui.View):
 		)
 
 		await cog.store.add_pending_match(match)
+		events_cog = interaction.client.get_cog("EventDisplayCog")
+		refresh_past_board = getattr(events_cog, "refresh_past_events_board", None)
+		if callable(refresh_past_board):
+			asyncio.create_task(refresh_past_board(interaction.guild))
 		validation_message = await cog.post_validation_message(interaction.guild, match)
 		if validation_message:
 			await cog.store.link_validation_message(match.match_id, validation_message.id)

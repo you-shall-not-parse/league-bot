@@ -44,7 +44,8 @@ SCHEDULED_EVENT_GUILD_ID = GUILD_ID
 # Optional: channel to associate to the scheduled event (voice/stage). Leave None to create an external event.
 SCHEDULED_EVENT_CHANNEL_ID: Optional[int] = None
 
-# Remove completed fixtures and their scheduled events some hours after kickoff.
+# Remove completed fixture controls some hours after kickoff. Discord events are
+# retained so the season's past-events board can continue linking to them.
 FIXTURE_RETENTION_AFTER_START = timedelta(hours=8)
 CORE_REMINDER_INTERVAL = timedelta(days=7)
 SCORE_REMINDER_DELAY_AFTER_EVENT = timedelta(hours=2)
@@ -1207,13 +1208,6 @@ async def _prune_expired_fixture_state(bot: commands.Bot) -> None:
 			await _maybe_send_score_submission_reminder(bot, s)
 		except Exception:
 			pass
-		if guild is not None and s.scheduled_event_id:
-			ev = await _fetch_scheduled_event(guild, int(s.scheduled_event_id))
-			if ev is not None:
-				try:
-					await ev.delete()
-				except Exception:
-					pass
 		if guild is not None:
 			try:
 				await maybe_remove_streamer_request(bot, guild=guild, thread_id=s.thread_id)
@@ -1313,6 +1307,10 @@ async def _create_or_update_scheduled_event(
 
 	# Only call edit if something actually changes.
 	edit_kwargs: dict[str, Any] = {}
+	if ev.start_time is None or ev.start_time.astimezone(timezone.utc) != start_dt:
+		edit_kwargs["start_time"] = start_dt
+	if ev.end_time is None or ev.end_time.astimezone(timezone.utc) != end_dt:
+		edit_kwargs["end_time"] = end_dt
 	if new_name != (ev.name or ""):
 		edit_kwargs["name"] = new_name
 	if new_desc is not None and new_desc != (ev.description or ""):
@@ -1692,9 +1690,6 @@ class DateTimeModal(discord.ui.Modal, title="Propose Date/Time (UTC)"):
 			return
 
 		s = _dict_to_state(raw)
-		if s.agreed_datetime_utc:
-			await interaction.response.send_message("Date/time is already locked.", ephemeral=True)
-			return
 		user_clan = _find_user_clan(interaction.user)
 		if user_clan not in (s.clan_a, s.clan_b):
 			await interaction.response.send_message("You are not part of this fixture.", ephemeral=True)
@@ -1716,13 +1711,18 @@ class DateTimeModal(discord.ui.Modal, title="Propose Date/Time (UTC)"):
 			)
 			return
 
+		action = "proposed"
+		if s.agreed_datetime_utc:
+			action = "re-proposed"
+		elif s.proposed_datetime_by and s.proposed_datetime_by != user_clan:
+			action = "countered"
 		s.proposed_datetime_utc = dt_utc.replace(tzinfo=timezone.utc).isoformat()
 		s.proposed_datetime_by = user_clan
 		s.agreed_datetime_utc = None
 		s.datetime_history.append(
 			{
 				"by": user_clan,
-				"action": "proposed",
+				"action": action,
 				"dt": s.proposed_datetime_utc,
 			}
 		)
@@ -1846,9 +1846,6 @@ class FixtureThreadView(discord.ui.View):
 		if not res:
 			return
 		s, _ = res
-		if s.agreed_datetime_utc:
-			await interaction.response.send_message("Date/time is already locked.", ephemeral=True)
-			return
 		await interaction.response.send_modal(DateTimeModal(thread_id=s.thread_id))
 
 	@discord.ui.button(label="Accept date/time", style=discord.ButtonStyle.success, custom_id="fixture:dt_accept")
