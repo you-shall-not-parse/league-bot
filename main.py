@@ -6,6 +6,8 @@ from discord.ext import commands
 from dotenv import load_dotenv
 import asyncio
 
+from fixture_store import initialize as initialize_fixture_store
+
 load_dotenv()
 TOKEN = os.getenv("LEAGUE_BOT_TOKEN")
 
@@ -74,6 +76,7 @@ async def on_command_error(ctx, error):
 async def main():
     if not TOKEN:
         raise RuntimeError("LEAGUE_BOT_TOKEN is not set in your environment or .env file!")
+    initialize_fixture_store()
     async with bot:
         await bot.load_extension("cogs.echo")
         await bot.load_extension("cogs.EmbedManager")

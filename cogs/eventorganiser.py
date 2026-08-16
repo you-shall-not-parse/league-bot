@@ -16,6 +16,9 @@ from discord.ext import tasks
 from cogs.streamercalendar import maybe_post_streamer_request, maybe_remove_streamer_request
 
 from data_paths import data_path
+from fixture_store import mark_thread as ledger_mark_thread
+from fixture_store import set_agreed_datetime as ledger_set_agreed_datetime
+from fixture_store import set_event_id as ledger_set_event_id
 from league_config import CLAN_ROLE_IDS, DIVISION_CLANS, DIVISION_FIXTURES_BY_ROUND, ROUND_WINDOWS, STREAMER_ROLE_ID
 
 # =============================
@@ -1322,6 +1325,7 @@ async def _create_or_update_scheduled_event(
 		except Exception:
 			return None
 		s.scheduled_event_id = ev.id
+		ledger_set_event_id(s.round_no, s.clan_a, s.clan_b, ev.id)
 
 	if ev is None:
 		return None
@@ -1633,6 +1637,13 @@ class CreateThreadButton(discord.ui.Button):
 		state = _load_state()
 		state["threads"][s.key] = _state_to_dict(s)
 		_save_state(state)
+		ledger_mark_thread(
+			s.round_no,
+			s.clan_a,
+			s.clan_b,
+			thread_id=s.thread_id,
+			control_message_id=s.control_message_id,
+		)
 		# Register the view so the buttons keep working after restarts.
 		try:
 			if hasattr(interaction.client, "add_view"):
@@ -1891,6 +1902,13 @@ class FixtureThreadView(discord.ui.View):
 			await interaction.response.send_message("The other clan must accept/counter.", ephemeral=True)
 			return
 		s.agreed_datetime_utc = s.proposed_datetime_utc
+		ledger_set_agreed_datetime(
+			s.round_no,
+			s.clan_a,
+			s.clan_b,
+			s.agreed_datetime_utc,
+			actor=clan,
+		)
 		s.datetime_history.append(
 			{"by": clan, "action": "accepted", "dt": s.agreed_datetime_utc}
 		)
@@ -2434,6 +2452,13 @@ class EventOrganiser(commands.Cog):
 		event: Optional[discord.ScheduledEvent] = None
 		if tracked_state is not None:
 			tracked_state.agreed_datetime_utc = start_dt.isoformat()
+			ledger_set_agreed_datetime(
+				tracked_state.round_no,
+				tracked_state.clan_a,
+				tracked_state.clan_b,
+				tracked_state.agreed_datetime_utc,
+				actor=f"admin:{interaction.user.id}",
+			)
 			tracked_state.proposed_datetime_utc = None
 			tracked_state.proposed_datetime_by = None
 			tracked_state.score_reminder_sent_at = None
@@ -2496,8 +2521,23 @@ class EventOrganiser(commands.Cog):
 		if event is None:
 			await interaction.followup.send("Could not correct or recreate the Discord event.", ephemeral=True)
 			return
+		if tracked_state is None:
+			ledger_set_agreed_datetime(
+				round_no,
+				configured_a,
+				configured_b,
+				start_dt.isoformat(),
+				actor=f"admin:{interaction.user.id}",
+			)
+			ledger_set_event_id(round_no, configured_a, configured_b, event.id)
 		if tracked_state is not None:
 			tracked_state.scheduled_event_id = event.id
+			ledger_set_event_id(
+				tracked_state.round_no,
+				tracked_state.clan_a,
+				tracked_state.clan_b,
+				event.id,
+			)
 			state = _load_state()
 			state["threads"][tracked_state.key] = _state_to_dict(tracked_state)
 			_save_state(state)

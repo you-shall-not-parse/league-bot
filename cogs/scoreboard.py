@@ -12,6 +12,10 @@ from discord import app_commands
 from discord.ext import commands
 
 from data_paths import data_path
+from fixture_store import clear_scores_for_division as ledger_clear_scores_for_division
+from fixture_store import fixture_for_roles as ledger_fixture_for_roles
+from fixture_store import record_score as ledger_record_score
+from fixture_store import update_score_status as ledger_update_score_status
 from league_config import CLAN_ROLE_IDS, DIVISION_CLANS
 
 
@@ -244,6 +248,7 @@ class PendingMatch:
 	submitter_score: int
 	opponent_score: int
 	created_at: str
+	fixture_id: Optional[str] = None
 	validation_message_id: Optional[int] = None
 	status: str = "pending"  # pending | confirmed | disputed
 	confirmed_by_id: Optional[int] = None
@@ -258,6 +263,7 @@ class PendingMatch:
 			"submitter_score": self.submitter_score,
 			"opponent_score": self.opponent_score,
 			"created_at": self.created_at,
+			"fixture_id": self.fixture_id,
 			"validation_message_id": self.validation_message_id,
 			"status": self.status,
 			"confirmed_by_id": self.confirmed_by_id,
@@ -274,6 +280,7 @@ class PendingMatch:
 			submitter_score=int(d["submitter_score"]),
 			opponent_score=int(d["opponent_score"]),
 			created_at=str(d.get("created_at") or _utcnow_iso()),
+			fixture_id=str(d["fixture_id"]) if d.get("fixture_id") else None,
 			validation_message_id=_safe_int(d.get("validation_message_id")),
 			status=str(d.get("status") or "pending"),
 			confirmed_by_id=_safe_int(d.get("confirmed_by_id")),
@@ -305,6 +312,20 @@ class ScoreboardStore:
 			self.data.setdefault("clan_stats", {})
 			self.data.setdefault("pending_matches", {})  # match_id -> match dict
 			self.data.setdefault("pending_by_validation_message", {})  # message_id(str) -> match_id
+			pending_matches = self.data["pending_matches"]
+			for raw_match in pending_matches.values() if isinstance(pending_matches, dict) else []:
+				if not isinstance(raw_match, dict) or raw_match.get("fixture_id"):
+					continue
+				try:
+					fixture = ledger_fixture_for_roles(
+						int(raw_match["submitter_clan_role_id"]),
+						int(raw_match["opponent_clan_role_id"]),
+						submitted_at=str(raw_match.get("created_at") or ""),
+					)
+				except Exception:
+					fixture = None
+				if fixture is not None:
+					raw_match["fixture_id"] = str(fixture["fixture_id"])
 
 			message_ids = self.data.get("leaderboard_message_ids")
 			if not isinstance(message_ids, dict):
@@ -424,6 +445,7 @@ class ScoreboardStore:
 				return
 			d["status"] = "disputed"
 		await self.save()
+		ledger_update_score_status(match_id, "disputed")
 
 	async def confirm_match(self, match_id: str, confirmed_by_id: int) -> Optional[PendingMatch]:
 		async with self._lock:
@@ -492,6 +514,7 @@ class ScoreboardStore:
 			self.data["last_result"] = result
 
 		await self.save()
+		ledger_update_score_status(match_id, "confirmed", confirmed_at=match.confirmed_at)
 		return match
 
 
@@ -642,6 +665,24 @@ class SubmitFlowView(discord.ui.View):
 			return
 
 		match_id = uuid.uuid4().hex[:12]
+		created_at = _utcnow_iso()
+		fixture = ledger_fixture_for_roles(
+			self.submitter_clan_role_id,
+			self.opponent_clan_role_id,
+			submitted_at=created_at,
+		)
+		if fixture is None:
+			await interaction.followup.send(
+				"No configured league fixture matches those clans.",
+				ephemeral=True,
+			)
+			return
+		if fixture.get("score_match_id") and fixture.get("score_status") != "disputed":
+			await interaction.followup.send(
+				"A score has already been submitted for this fixture. Use the admin match-edit command if it needs correction.",
+				ephemeral=True,
+			)
+			return
 		match = PendingMatch(
 			match_id=match_id,
 			submitter_id=interaction.user.id,
@@ -649,7 +690,8 @@ class SubmitFlowView(discord.ui.View):
 			opponent_clan_role_id=self.opponent_clan_role_id,
 			submitter_score=a,
 			opponent_score=b,
-			created_at=_utcnow_iso(),
+			created_at=created_at,
+			fixture_id=str(fixture["fixture_id"]),
 		)
 
 		log.info(
@@ -663,6 +705,14 @@ class SubmitFlowView(discord.ui.View):
 		)
 
 		await cog.store.add_pending_match(match)
+		ledger_record_score(
+			match.fixture_id,
+			match_id=match.match_id,
+			submitter_role_id=match.submitter_clan_role_id,
+			submitter_score=match.submitter_score,
+			opponent_score=match.opponent_score,
+			submitted_at=match.created_at,
+		)
 		events_cog = interaction.client.get_cog("EventDisplayCog")
 		refresh_past_board = getattr(events_cog, "refresh_past_events_board", None)
 		if callable(refresh_past_board):
@@ -1289,7 +1339,10 @@ class ScoreboardCog(commands.Cog):
 			timestamp=datetime.now(timezone.utc),
 		)
 		embed.add_field(name="Submitted by", value=f"<@{match.submitter_id}>", inline=False)
-		embed.set_footer(text=f"Match ID: {match.match_id}")
+		footer = f"Match ID: {match.match_id}"
+		if match.fixture_id:
+			footer += f" | Fixture ID: {match.fixture_id}"
+		embed.set_footer(text=footer)
 
 		opponent_role_mention = f"<@&{match.opponent_clan_role_id}>"
 		msg = await channel.send(
@@ -1326,6 +1379,10 @@ class ScoreboardCog(commands.Cog):
 		if confirmed is None:
 			await interaction.followup.send("Failed to confirm match.", ephemeral=True)
 			return
+		events_cog = interaction.client.get_cog("EventDisplayCog")
+		request_refresh = getattr(events_cog, "request_events_refresh", None)
+		if callable(request_refresh):
+			request_refresh()
 
 		log.info(
 			"Result confirmed match_id=%s by user_id=%s -> queue leaderboard update",
@@ -1370,6 +1427,10 @@ class ScoreboardCog(commands.Cog):
 			)
 			return
 		await self.store.mark_disputed(match_id)
+		events_cog = interaction.client.get_cog("EventDisplayCog")
+		request_refresh = getattr(events_cog, "request_events_refresh", None)
+		if callable(request_refresh):
+			request_refresh()
 		try:
 			if interaction.message:
 				new_embed = interaction.message.embeds[0] if interaction.message.embeds else None
@@ -1534,6 +1595,21 @@ class ScoreboardCog(commands.Cog):
 		self.store.data["last_result"] = result
 
 		await self.store.save()
+		if match.fixture_id:
+			ledger_record_score(
+				match.fixture_id,
+				match_id=match.match_id,
+				submitter_role_id=match.submitter_clan_role_id,
+				submitter_score=match.submitter_score,
+				opponent_score=match.opponent_score,
+				submitted_at=match.created_at,
+				status=match.status,
+			)
+			ledger_update_score_status(match.match_id, "confirmed", confirmed_at=match.confirmed_at)
+		events_cog = self.bot.get_cog("EventDisplayCog")
+		request_refresh = getattr(events_cog, "request_events_refresh", None)
+		if callable(request_refresh):
+			request_refresh()
 		await self.ensure_leaderboard_message()
 		await interaction.followup.send(f"Updated match {match_id} to {new_a}-{new_b} and adjusted leaderboard.", ephemeral=True)
 
@@ -1656,9 +1732,20 @@ class ScoreboardCog(commands.Cog):
 				self.store.data["pending_matches"] = kept_matches
 				self.store.data["pending_by_validation_message"] = kept_validation_links
 		await self.store.save()
+		cleared_scores = ledger_clear_scores_for_division(
+			None if division.value == "ALL" else division.value,
+			actor=str(interaction.user.id),
+		)
+		events_cog = self.bot.get_cog("EventDisplayCog")
+		request_refresh = getattr(events_cog, "request_events_refresh", None)
+		if callable(request_refresh):
+			request_refresh()
 		await self.ensure_leaderboard_message()
 		label = "all divisions" if division.value == "ALL" else division.value
-		await interaction.followup.send(f"Leaderboard reset for {label} and latest result cleared where applicable.", ephemeral=True)
+		await interaction.followup.send(
+			f"Leaderboard reset for {label}; cleared {cleared_scores} fixture score(s) and the latest result where applicable.",
+			ephemeral=True,
+		)
 
 
 async def setup(bot: commands.Bot):
