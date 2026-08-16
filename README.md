@@ -19,6 +19,18 @@ Admin recovery:
 - `/scoreboard_admin_edit_match` corrects an already confirmed score.
 - `/scoreboard_division_reset` clears both leaderboard data and canonical fixture
   scores for the selected division.
+- `/refresh_fixture_control` immediately refreshes the admin control board and both
+  public fixture calendars.
+
+The admin fixture-control board is maintained in channel `1538540411537330268`.
+It contains a league-health summary and one message per round, with action-required
+fixtures shown first in the summary. Its privacy is inherited from the Discord
+channel permissions, so the channel should remain restricted to league admins.
+
+If a future Discord event is cancelled, deleted, or found missing after downtime,
+the fixture remains in the ledger, is removed from Upcoming, and is flagged as
+action required on the admin board. `/correct_fixture_event` clears that flag when
+it recreates the event.
 
 Back up the `data` directory as part of normal bot backups. Do not manually edit
 `league.db` while the bot is running.

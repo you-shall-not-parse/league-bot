@@ -81,6 +81,7 @@ def initialize() -> None:
                 thread_id INTEGER,
                 control_message_id INTEGER,
                 scheduled_event_id INTEGER,
+                event_cancelled_at TEXT,
                 score_match_id TEXT,
                 score_a INTEGER,
                 score_b INTEGER,
@@ -102,6 +103,12 @@ def initialize() -> None:
             );
             """
         )
+        fixture_columns = {
+            str(row["name"])
+            for row in connection.execute("PRAGMA table_info(fixtures)").fetchall()
+        }
+        if "event_cancelled_at" not in fixture_columns:
+            connection.execute("ALTER TABLE fixtures ADD COLUMN event_cancelled_at TEXT")
         season_year = min(start for start, _ in ROUND_WINDOWS.values()).year
         now = _now_iso()
         for division, rounds in DIVISION_FIXTURES_BY_ROUND.items():
@@ -230,7 +237,11 @@ def set_event_id(round_no: int, clan_a: str, clan_b: str, event_id: int) -> Opti
     fixture = find_fixture(round_no, clan_a, clan_b)
     if fixture is None:
         return None
-    _update(fixture["fixture_id"], {"scheduled_event_id": int(event_id)}, action="event_linked")
+    _update(
+        fixture["fixture_id"],
+        {"scheduled_event_id": int(event_id), "event_cancelled_at": None},
+        action="event_linked",
+    )
     return str(fixture["fixture_id"])
 
 
@@ -245,11 +256,33 @@ def sync_event(
     fixture = find_fixture(round_no, clan_a, clan_b)
     if fixture is None:
         return None
-    fields: dict[str, Any] = {"scheduled_event_id": int(event_id)}
+    fields: dict[str, Any] = {"scheduled_event_id": int(event_id), "event_cancelled_at": None}
     if start_time_utc:
         fields["agreed_datetime_utc"] = start_time_utc
     _update(fixture["fixture_id"], fields)
     return str(fixture["fixture_id"])
+
+
+def mark_event_cancelled(event_id: int, *, actor: Optional[str] = None) -> Optional[str]:
+    """Retain a fixture while marking its Discord event as cancelled or missing."""
+    initialize_schema_only()
+    with _connect() as connection:
+        row = connection.execute(
+            "SELECT fixture_id, event_cancelled_at FROM fixtures WHERE scheduled_event_id = ?",
+            (int(event_id),),
+        ).fetchone()
+    if row is None:
+        return None
+    fixture_id = str(row["fixture_id"])
+    if row["event_cancelled_at"]:
+        return fixture_id
+    _update(
+        fixture_id,
+        {"event_cancelled_at": _now_iso()},
+        action="event_cancelled",
+        actor=actor,
+    )
+    return fixture_id
 
 
 def _parse_iso(value: Any) -> Optional[datetime]:
@@ -271,6 +304,8 @@ def effective_status(fixture: dict[str, Any], *, now: Optional[datetime] = None)
         return "disputed"
     if fixture.get("score_submitted_at"):
         return "score_submitted"
+    if fixture.get("event_cancelled_at"):
+        return "event_cancelled"
     agreed = _parse_iso(fixture.get("agreed_datetime_utc"))
     if agreed is not None:
         if agreed + timedelta(hours=2) <= current:

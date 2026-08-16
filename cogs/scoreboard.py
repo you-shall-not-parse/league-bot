@@ -714,9 +714,9 @@ class SubmitFlowView(discord.ui.View):
 			submitted_at=match.created_at,
 		)
 		events_cog = interaction.client.get_cog("EventDisplayCog")
-		refresh_past_board = getattr(events_cog, "refresh_past_events_board", None)
-		if callable(refresh_past_board):
-			asyncio.create_task(refresh_past_board(interaction.guild))
+		request_refresh = getattr(events_cog, "request_events_refresh", None)
+		if callable(request_refresh):
+			request_refresh()
 		validation_message = await cog.post_validation_message(interaction.guild, match)
 		if validation_message:
 			await cog.store.link_validation_message(match.match_id, validation_message.id)

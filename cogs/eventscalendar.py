@@ -3,17 +3,22 @@ import re
 import json
 import os
 import asyncio
+from collections import Counter
 from typing import Optional
 from datetime import datetime, time, timezone
 import discord
+from discord import app_commands
 from discord.ext import commands, tasks
 
 from data_paths import data_path
 from fixture_store import list_fixture_views
+from fixture_store import mark_event_cancelled as ledger_mark_event_cancelled
 from fixture_store import sync_event as ledger_sync_event
 from league_config import (
+    ADMIN_FIXTURE_BOARD_CHANNEL_ID,
     EMBED_COLOR,
     EVENT_DISPLAY_CHANNEL_ID,
+    GUILD_ID,
     KEYWORD_EMOJI_TAGS,
     MAX_EVENTS_TO_DISPLAY,
     PAST_EVENTS_DISPLAY_CHANNEL_ID,
@@ -39,6 +44,9 @@ EVENTS_DISPLAY_STATE_PATH = data_path("levents_display_state.json")
 
 # Past-fixture board and score submission data.
 PAST_EVENTS_DISPLAY_STATE_PATH = data_path("past_events_display_state.json")
+
+# Admin fixture-control board message IDs.
+ADMIN_FIXTURE_BOARD_STATE_PATH = data_path("admin_fixture_board_state.json")
 
 # -----------------------------
 # EVENT THREADS (AUTO)
@@ -77,6 +85,10 @@ class EventDisplayCog(commands.Cog):
         self.past_display_message_id: Optional[int] = self._load_past_display_message_id()
         self.past_archive_thread_id: Optional[int] = self._load_past_archive_thread_id()
         self.past_archive_message_ids: dict[str, int] = self._load_past_archive_message_ids()
+        admin_state = self._load_admin_board_state()
+        self.admin_summary_message_id: Optional[int] = admin_state.get("summary_message_id")
+        self.admin_round_message_ids: dict[str, int] = admin_state.get("round_message_ids", {})
+        self.stale_admin_board: Optional[dict] = admin_state.get("stale_board")
         self._target_guild_id: Optional[int] = None
         self._update_lock = asyncio.Lock()
         self._debounce_task: Optional[asyncio.Task] = None
@@ -323,6 +335,59 @@ class EventDisplayCog(commands.Cog):
         return {str(key): value for key, value in raw.items() if isinstance(value, int)}
 
     @staticmethod
+    def _load_admin_board_state() -> dict:
+        try:
+            with open(ADMIN_FIXTURE_BOARD_STATE_PATH, "r", encoding="utf-8") as file:
+                state = json.load(file)
+            if not isinstance(state, dict):
+                return {"summary_message_id": None, "round_message_ids": {}, "stale_board": None}
+            if state.get("channel_id") != ADMIN_FIXTURE_BOARD_CHANNEL_ID:
+                old_message_ids = [state.get("summary_message_id")]
+                old_round_ids = state.get("round_message_ids", {})
+                if isinstance(old_round_ids, dict):
+                    old_message_ids.extend(old_round_ids.values())
+                stale_board = {
+                    "channel_id": state.get("channel_id"),
+                    "message_ids": [message_id for message_id in old_message_ids if isinstance(message_id, int)],
+                }
+                return {
+                    "summary_message_id": None,
+                    "round_message_ids": {},
+                    "stale_board": stale_board,
+                }
+            summary_message_id = state.get("summary_message_id")
+            round_message_ids = state.get("round_message_ids", {})
+            stale_board = state.get("stale_board")
+            return {
+                "summary_message_id": summary_message_id if isinstance(summary_message_id, int) else None,
+                "round_message_ids": {
+                    str(round_no): message_id
+                    for round_no, message_id in round_message_ids.items()
+                    if isinstance(message_id, int)
+                } if isinstance(round_message_ids, dict) else {},
+                "stale_board": stale_board if isinstance(stale_board, dict) else None,
+            }
+        except Exception:
+            return {"summary_message_id": None, "round_message_ids": {}, "stale_board": None}
+
+    def _save_admin_board_state(self) -> None:
+        try:
+            with open(ADMIN_FIXTURE_BOARD_STATE_PATH, "w", encoding="utf-8") as file:
+                json.dump(
+                    {
+                        "channel_id": ADMIN_FIXTURE_BOARD_CHANNEL_ID,
+                        "summary_message_id": self.admin_summary_message_id,
+                        "round_message_ids": self.admin_round_message_ids,
+                        "stale_board": self.stale_admin_board,
+                        "updated_at": datetime.now(timezone.utc).isoformat(),
+                    },
+                    file,
+                    indent=2,
+                )
+        except Exception:
+            logger.warning("Failed to persist admin fixture-board state.", exc_info=True)
+
+    @staticmethod
     def _parse_utc(value: object) -> Optional[datetime]:
         try:
             parsed = datetime.fromisoformat(str(value))
@@ -436,6 +501,13 @@ class EventDisplayCog(commands.Cog):
                 inline=False,
             )
             detail_embed.add_field(name="Round window", value=str(event.get("round_window") or "Unknown"), inline=False)
+        elif event.get("event_cancelled"):
+            detail_embed.add_field(
+                name="Status",
+                value="\U0001f534 Discord event cancelled or deleted - admin action required",
+                inline=False,
+            )
+            detail_embed.add_field(name="Round window", value=str(event.get("round_window") or "Unknown"), inline=False)
         elif event.get("unorganised_current"):
             detail_embed.add_field(
                 name="Status",
@@ -484,7 +556,16 @@ class EventDisplayCog(commands.Cog):
             "confirmed",
             "disputed",
         }
-        fixtures = [fixture for fixture in list_fixture_views(now=now) if fixture["status"] in visible_statuses]
+        fixtures = []
+        for fixture in list_fixture_views(now=now):
+            status = str(fixture["status"])
+            window_start = self._parse_utc(f"{fixture['window_start']}T00:00:00+00:00")
+            if status in visible_statuses or (
+                status == "event_cancelled"
+                and window_start is not None
+                and window_start <= now
+            ):
+                fixtures.append(fixture)
         fixtures.sort(
             key=lambda fixture: (
                 self._parse_utc(fixture.get("agreed_datetime_utc"))
@@ -553,6 +634,7 @@ class EventDisplayCog(commands.Cog):
                 "round_window": format_round_window(int(fixture["round_no"])),
                 "missed_window": status == "missed",
                 "unorganised_current": status == "unorganised",
+                "event_cancelled": status == "event_cancelled",
             }
             archive_url = await self._archive_event_message(
                 guild,
@@ -566,12 +648,16 @@ class EventDisplayCog(commands.Cog):
                 f"\u26a0\ufe0f Missed window: {event.get('round_window')}"
                 if status == "missed"
                 else (
-                    f"\U0001f7e0 Not fully organised - current window: {event.get('round_window')}"
-                    if status == "unorganised"
+                    f"\U0001f534 Event cancelled or missing - admin action required"
+                    if status == "event_cancelled"
                     else (
-                        f"<t:{int(start.timestamp())}:F>"
-                        if start is not None
-                        else format_round_window(int(fixture["round_no"]))
+                        f"\U0001f7e0 Not fully organised - current window: {event.get('round_window')}"
+                        if status == "unorganised"
+                        else (
+                            f"<t:{int(start.timestamp())}:F>"
+                            if start is not None
+                            else format_round_window(int(fixture["round_no"]))
+                        )
                     )
                 )
             )
@@ -591,9 +677,225 @@ class EventDisplayCog(commands.Cog):
             except Exception:
                 logger.warning("Failed to refresh the past-events board.", exc_info=True)
 
+    @staticmethod
+    def _admin_status(status: str) -> tuple[str, str, str]:
+        statuses = {
+            "missed": ("\U0001f534", "Missed round window", "action"),
+            "unorganised": ("\U0001f534", "Not fully organised", "action"),
+            "played_awaiting_score": ("\U0001f534", "Played - score required", "action"),
+            "disputed": ("\U0001f534", "Score disputed", "action"),
+            "event_cancelled": ("\U0001f534", "Event cancelled or missing", "action"),
+            "planning": ("\U0001f7e0", "Organisation in progress", "progress"),
+            "score_submitted": ("\U0001f7e0", "Score awaiting confirmation", "progress"),
+            "planned": ("\U0001f7e2", "Planned", "planned"),
+            "confirmed": ("\u2705", "Complete", "complete"),
+            "scheduled": ("\u26aa", "Future round", "future"),
+        }
+        return statuses.get(status, ("\u26aa", status.replace("_", " ").title(), "future"))
+
+    def _admin_fixture_value(self, guild: discord.Guild, fixture: dict) -> str:
+        status = str(fixture["status"])
+        _, status_label, _ = self._admin_status(status)
+        agreed = self._parse_utc(fixture.get("agreed_datetime_utc"))
+        submitted = self._parse_utc(fixture.get("score_submitted_at"))
+        cancelled = self._parse_utc(fixture.get("event_cancelled_at"))
+        details = [f"**Status:** {status_label}"]
+        if status == "event_cancelled" and cancelled is not None:
+            details.append(f"**Detected:** <t:{int(cancelled.timestamp())}:R>")
+        details.append(
+            f"**Date:** <t:{int(agreed.timestamp())}:F>"
+            if agreed is not None
+            else f"**Date:** Not agreed · {format_round_window(int(fixture['round_no']))}"
+        )
+
+        if fixture.get("score_submitted_at") is not None:
+            score_text = f"{fixture['clan_a']} {fixture['score_a']}–{fixture['score_b']} {fixture['clan_b']}"
+            if status == "confirmed":
+                score_text += " · Confirmed"
+            elif status == "disputed":
+                score_text += " · Disputed"
+            else:
+                score_text += " · Awaiting confirmation"
+            if submitted is not None:
+                score_text += f" · <t:{int(submitted.timestamp())}:R>"
+            details.append(f"**Score:** {score_text}")
+        else:
+            details.append("**Score:** Not submitted")
+
+        links: list[str] = []
+        if fixture.get("thread_id"):
+            links.append(f"Thread <#{fixture['thread_id']}>")
+        if status == "planned" and fixture.get("scheduled_event_id"):
+            event_id = int(fixture["scheduled_event_id"])
+            links.append(f"[Discord event](https://discord.com/events/{guild.id}/{event_id})")
+        if links:
+            details.append("**Open:** " + " · ".join(links))
+        details.append(f"**Fixture ID:** `{fixture['fixture_id']}`")
+        return "\n".join(details)
+
+    async def _upsert_admin_message(
+        self,
+        channel: discord.TextChannel,
+        message_id: Optional[int],
+        embed: discord.Embed,
+    ) -> discord.Message:
+        message: Optional[discord.Message] = None
+        if isinstance(message_id, int):
+            try:
+                message = await channel.fetch_message(message_id)
+            except Exception:
+                message = None
+        if message is None:
+            return await channel.send(embed=embed)
+        if not message.embeds or message.embeds[0].to_dict() != embed.to_dict():
+            await message.edit(embed=embed)
+        return message
+
+    async def _retire_stale_admin_board(self, guild: discord.Guild) -> None:
+        """Delete only the persisted messages belonging to the previous board channel."""
+        stale = getattr(self, "stale_admin_board", None)
+        if not isinstance(stale, dict):
+            return
+        channel_id = stale.get("channel_id")
+        message_ids = stale.get("message_ids", [])
+        if not isinstance(channel_id, int) or not isinstance(message_ids, list):
+            self.stale_admin_board = None
+            return
+        channel = guild.get_channel(channel_id)
+        if channel is None:
+            try:
+                channel = await guild.fetch_channel(channel_id)
+            except Exception:
+                return
+        if not isinstance(channel, discord.TextChannel):
+            return
+        remaining: list[int] = []
+        for message_id in message_ids:
+            if not isinstance(message_id, int):
+                continue
+            try:
+                message = await channel.fetch_message(message_id)
+                await message.delete()
+            except discord.NotFound:
+                continue
+            except Exception:
+                remaining.append(message_id)
+        self.stale_admin_board = (
+            {"channel_id": channel_id, "message_ids": remaining}
+            if remaining
+            else None
+        )
+
+    async def _refresh_admin_fixture_board(self, guild: discord.Guild) -> None:
+        channel = guild.get_channel(ADMIN_FIXTURE_BOARD_CHANNEL_ID)
+        if channel is None:
+            try:
+                channel = await guild.fetch_channel(ADMIN_FIXTURE_BOARD_CHANNEL_ID)
+            except Exception:
+                channel = None
+        if not isinstance(channel, discord.TextChannel):
+            logger.error("Admin fixture-board channel %s is not available", ADMIN_FIXTURE_BOARD_CHANNEL_ID)
+            return
+
+        now = datetime.now(timezone.utc)
+        fixtures = list_fixture_views(now=now)
+        categories = Counter(self._admin_status(str(fixture["status"]))[2] for fixture in fixtures)
+        action_fixtures = [
+            fixture for fixture in fixtures
+            if self._admin_status(str(fixture["status"]))[2] == "action"
+        ]
+        action_fixtures.sort(key=lambda fixture: (int(fixture["round_no"]), str(fixture["division"])))
+
+        summary = discord.Embed(
+            title="\U0001f6e0\ufe0f League Fixture Control",
+            description=(
+                "Admin operational view of every configured league fixture. "
+                "The public upcoming and past-match calendars remain separate."
+            ),
+            color=EMBED_COLOR,
+            timestamp=now,
+        )
+        summary.add_field(
+            name="League health",
+            value=(
+                f"\U0001f534 **Action required:** {categories['action']}\n"
+                f"\U0001f7e0 **In progress:** {categories['progress']}\n"
+                f"\U0001f7e2 **Planned:** {categories['planned']}\n"
+                f"\u2705 **Complete:** {categories['complete']}\n"
+                f"\u26aa **Future rounds:** {categories['future']}\n"
+                f"**Total fixtures:** {len(fixtures)}"
+            ),
+            inline=False,
+        )
+        if action_fixtures:
+            action_lines = []
+            for fixture in action_fixtures:
+                _, label, _ = self._admin_status(str(fixture["status"]))
+                action_lines.append(
+                    f"• R{fixture['round_no']} · {fixture['clan_a']} vs {fixture['clan_b']} — {label}"
+                )
+            summary.add_field(name="Needs attention", value="\n".join(action_lines), inline=False)
+        else:
+            summary.add_field(name="Needs attention", value="No fixture currently needs admin action.", inline=False)
+        summary.add_field(
+            name="Admin recovery commands",
+            value=(
+                "`/correct_fixture_event` — correct or recreate a date/event\n"
+                "`/scoreboard_admin_edit_match` — correct a confirmed score\n"
+                "`/scoreboard_division_reset` — reset division results\n"
+                "`/refresh_fixture_control` — refresh all fixture boards"
+            ),
+            inline=False,
+        )
+        summary.set_footer(text="Automatically refreshed · visibility is controlled by this channel's permissions")
+        summary_message = await self._upsert_admin_message(channel, self.admin_summary_message_id, summary)
+        self.admin_summary_message_id = summary_message.id
+
+        for round_no in sorted(ROUND_WINDOWS):
+            round_fixtures = [fixture for fixture in fixtures if int(fixture["round_no"]) == round_no]
+            round_embed = discord.Embed(
+                title=f"Round {round_no} · {format_round_window(round_no)}",
+                color=EMBED_COLOR,
+            )
+            for fixture in round_fixtures:
+                icon, status_label, _ = self._admin_status(str(fixture["status"]))
+                title = self._format_event_title(
+                    guild,
+                    f"{fixture['division']} · {fixture['clan_a']} vs {fixture['clan_b']}",
+                )
+                round_embed.add_field(
+                    name=f"{icon} {title} — {status_label}",
+                    value=self._admin_fixture_value(guild, fixture),
+                    inline=False,
+                )
+            round_embed.set_footer(text=f"Round {round_no} · {len(round_fixtures)} fixtures")
+            round_message = await self._upsert_admin_message(
+                channel,
+                self.admin_round_message_ids.get(str(round_no)),
+                round_embed,
+            )
+            self.admin_round_message_ids[str(round_no)] = round_message.id
+        await self._retire_stale_admin_board(guild)
+        self._save_admin_board_state()
+
     def request_events_refresh(self) -> None:
         """Queue a refresh of both the upcoming and past event boards."""
         self._debounced_refresh(delay_seconds=0.5)
+
+    @app_commands.guilds(discord.Object(id=GUILD_ID))
+    @app_commands.guild_only()
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.command(
+        name="refresh_fixture_control",
+        description="Admin: refresh the fixture control and public calendar boards",
+    )
+    async def refresh_fixture_control(self, interaction: discord.Interaction) -> None:
+        if not isinstance(interaction.user, discord.Member) or not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message("Administrator permission is required.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        await self._update_once(reason=f"admin:{interaction.user.id}")
+        await interaction.followup.send("Fixture control and calendar boards refreshed.", ephemeral=True)
 
     def _resolve_custom_emoji(self, guild: discord.Guild, emoji_tag: str) -> str:
         """Resolve a tag like ':name:' to '<:name:id>' if possible."""
@@ -657,6 +959,10 @@ class EventDisplayCog(commands.Cog):
                 # Fetch scheduled events
                 events = await guild.fetch_scheduled_events(with_counts=True)
                 for event in sorted(events, key=lambda item: item.start_time or datetime.min.replace(tzinfo=timezone.utc)):
+                    status_name = str(getattr(event.status, "name", event.status)).lower()
+                    if status_name in {"cancelled", "canceled"}:
+                        ledger_mark_event_cancelled(event.id, actor="discord:cancel")
+                        continue
                     fixture_key = self._event_fixture_key(str(event.name or ""))
                     clans = self._event_clans(str(event.name or ""))
                     if fixture_key is None or clans is None:
@@ -672,6 +978,19 @@ class EventDisplayCog(commands.Cog):
                 # Filter for future/live events. Retained events whose end time has
                 # passed belong only on the past-events board.
                 now = datetime.now(timezone.utc)
+                available_event_ids = {
+                    event.id
+                    for event in events
+                    if str(getattr(event.status, "name", event.status)).lower() not in {"cancelled", "canceled"}
+                }
+                for fixture in list_fixture_views(now=now):
+                    event_id = fixture.get("scheduled_event_id")
+                    if (
+                        fixture["status"] == "planned"
+                        and isinstance(event_id, int)
+                        and event_id not in available_event_ids
+                    ):
+                        ledger_mark_event_cancelled(event_id, actor="discord:missing")
                 filtered_events = [
                     e for e in events
                     if e.status in (discord.EventStatus.scheduled, discord.EventStatus.active)
@@ -689,7 +1008,14 @@ class EventDisplayCog(commands.Cog):
 
                 # Save all events (not just filtered ones) to JSON
                 await self.save_events_to_json(events)
-                await self._refresh_past_events_board(guild)
+                try:
+                    await self._refresh_past_events_board(guild)
+                except Exception:
+                    logger.warning("Failed to refresh the past-events board.", exc_info=True)
+                try:
+                    await self._refresh_admin_fixture_board(guild)
+                except Exception:
+                    logger.warning("Failed to refresh the admin fixture-control board.", exc_info=True)
 
                 # Edit existing display message if possible (persists across restarts)
                 message: Optional[discord.Message] = None
@@ -761,6 +1087,11 @@ class EventDisplayCog(commands.Cog):
         # Preserve the last known metadata so a completed/deleted event remains
         # represented on the season history board.
         await self.save_events_to_json([scheduled_event])
+        status_name = str(getattr(scheduled_event.status, "name", scheduled_event.status)).lower()
+        event_end = scheduled_event.end_time or scheduled_event.start_time
+        still_due = event_end is None or event_end.astimezone(timezone.utc) > datetime.now(timezone.utc)
+        if status_name in {"cancelled", "canceled"} or still_due:
+            ledger_mark_event_cancelled(scheduled_event.id, actor="discord:delete")
         self._debounced_refresh()
 
     @commands.Cog.listener()
@@ -768,6 +1099,10 @@ class EventDisplayCog(commands.Cog):
         guild_id = after.guild_id if after else before.guild_id
         if self._target_guild_id and guild_id != self._target_guild_id:
             return
+        status_name = str(getattr(after.status, "name", after.status)).lower()
+        if status_name in {"cancelled", "canceled"}:
+            await self.save_events_to_json([after])
+            ledger_mark_event_cancelled(after.id, actor="discord:cancel")
         self._debounced_refresh()
 
     async def save_events_to_json(self, events: list[discord.ScheduledEvent]):

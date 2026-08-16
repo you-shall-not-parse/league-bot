@@ -1644,6 +1644,10 @@ class CreateThreadButton(discord.ui.Button):
 			thread_id=s.thread_id,
 			control_message_id=s.control_message_id,
 		)
+		events_cog = interaction.client.get_cog("EventDisplayCog")
+		request_refresh = getattr(events_cog, "request_events_refresh", None)
+		if callable(request_refresh):
+			request_refresh()
 		# Register the view so the buttons keep working after restarts.
 		try:
 			if hasattr(interaction.client, "add_view"):
@@ -1772,6 +1776,10 @@ class DateTimeModal(discord.ui.Modal, title="Propose Date/Time (UTC)"):
 		_save_state(state)
 
 		await interaction.response.send_message("Date/time proposal recorded.", ephemeral=True)
+		events_cog = interaction.client.get_cog("EventDisplayCog")
+		request_refresh = getattr(events_cog, "request_events_refresh", None)
+		if callable(request_refresh):
+			request_refresh()
 		asyncio.create_task(_refresh_thread(interaction.client, s.thread_id))
 
 

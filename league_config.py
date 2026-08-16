@@ -57,6 +57,10 @@ EVENT_DISPLAY_CHANNEL_ID: int = 1464719794912755937
 # Channel ID where completed fixtures from the active season are listed.
 PAST_EVENTS_DISPLAY_CHANNEL_ID: int = 1538521252501913650
 
+# Admin-only operational view of every configured fixture. Channel permissions
+# control who can see this board.
+ADMIN_FIXTURE_BOARD_CHANNEL_ID: int = 1538540411537330268
+
 # How often to update the events display (in minutes)
 UPDATE_INTERVAL_MINUTES: int = 30
 
