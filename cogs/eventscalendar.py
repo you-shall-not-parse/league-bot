@@ -459,7 +459,7 @@ class EventDisplayCog(commands.Cog):
                 continue
             found_thread = True
             try:
-                await thread.delete(reason="Past-events board no longer uses archive threads")
+                await thread.delete()
             except discord.NotFound:
                 pass
             except Exception:
