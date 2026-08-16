@@ -347,6 +347,18 @@ class EventDisplayCog(commands.Cog):
         submitted_at, match = min(candidates, key=lambda item: item[0])
         return {"submitted_at": submitted_at, "status": str(match.get("status") or "pending")}
 
+    @staticmethod
+    def _past_event_link(guild_id: int, event: dict) -> tuple[str, str]:
+        """Prefer the durable fixture-thread link over an expired event page."""
+        description = str(event.get("description") or "")
+        thread_match = re.search(r"Thread:\s*<#(\d+)>", description, flags=re.IGNORECASE)
+        if thread_match:
+            thread_id = thread_match.group(1)
+            return f"https://discord.com/channels/{guild_id}/{thread_id}", "Fixture thread"
+        event_id = event.get("id")
+        event_url = str(event.get("url") or f"https://discord.com/events/{guild_id}/{event_id}")
+        return event_url, "Discord event"
+
     async def _refresh_past_events_board(self, guild: discord.Guild) -> None:
         channel = guild.get_channel(PAST_EVENTS_DISPLAY_CHANNEL_ID)
         if channel is None:
@@ -404,8 +416,7 @@ class EventDisplayCog(commands.Cog):
         if not isinstance(pending_matches, dict):
             pending_matches = {}
         for start, event in past_events[:25]:
-            event_id = event.get("id")
-            event_url = str(event.get("url") or f"https://discord.com/events/{guild.id}/{event_id}")
+            event_url, link_label = self._past_event_link(guild.id, event)
             title = self._format_event_title(guild, str(event.get("name") or "Fixture"))
             submission = self._score_submission_for_event(event, pending_matches)
             if submission is None:
@@ -415,7 +426,7 @@ class EventDisplayCog(commands.Cog):
                 score_line = f"✅ Score submitted <t:{int(submitted_at.timestamp())}:F>"
             embed.add_field(
                 name="\u200b",
-                value=f"**[{title}]({event_url})**\n<t:{int(start.timestamp())}:F>\n{score_line}",
+                value=f"**{title}** · [{link_label}]({event_url})\n<t:{int(start.timestamp())}:F>\n{score_line}",
                 inline=False,
             )
         embed.set_footer(text="Last updated")
