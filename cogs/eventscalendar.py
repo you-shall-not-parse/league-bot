@@ -16,7 +16,9 @@ from league_config import (
     MAX_EVENTS_TO_DISPLAY,
     PAST_EVENTS_DISPLAY_CHANNEL_ID,
     CLAN_ROLE_IDS,
+    DIVISION_FIXTURES_BY_ROUND,
     ROUND_WINDOWS,
+    format_round_window,
     UPDATE_INTERVAL_MINUTES,
 )
 
@@ -303,7 +305,9 @@ class EventDisplayCog(commands.Cog):
         try:
             with open(PAST_EVENTS_DISPLAY_STATE_PATH, "r", encoding="utf-8") as f:
                 state = json.load(f)
-            return state if isinstance(state, dict) else {}
+            if not isinstance(state, dict) or state.get("channel_id") != PAST_EVENTS_DISPLAY_CHANNEL_ID:
+                return {}
+            return state
         except Exception:
             return {}
 
@@ -341,6 +345,62 @@ class EventDisplayCog(commands.Cog):
             return None
         return found[0], found[1]
 
+    @staticmethod
+    def _event_round(event_name: str) -> Optional[int]:
+        match = re.search(r"\bRound\s+(\d+)\s*:", event_name, flags=re.IGNORECASE)
+        return int(match.group(1)) if match else None
+
+    @classmethod
+    def _event_fixture_key(cls, event_name: str) -> Optional[tuple[int, frozenset[str]]]:
+        round_no = cls._event_round(event_name)
+        clans = cls._event_clans(event_name)
+        if round_no is None or clans is None:
+            return None
+        return round_no, frozenset(clans)
+
+    @staticmethod
+    def _fixture_title(division: str, round_no: int, clan_a: str, clan_b: str) -> str:
+        return f"{division} \u2022 Round {round_no}: {clan_a} vs {clan_b}"
+
+    def _score_submission_for_fixture(
+        self,
+        clans: tuple[str, str],
+        pending_matches: dict,
+        *,
+        not_before: Optional[datetime] = None,
+    ) -> Optional[dict]:
+        target_roles = {CLAN_ROLE_IDS[clans[0]], CLAN_ROLE_IDS[clans[1]]}
+        role_names = {role_id: clan for clan, role_id in CLAN_ROLE_IDS.items()}
+        candidates: list[tuple[datetime, dict]] = []
+        for raw_match in pending_matches.values():
+            if not isinstance(raw_match, dict):
+                continue
+            try:
+                submitter_role = int(raw_match.get("submitter_clan_role_id", 0))
+                opponent_role = int(raw_match.get("opponent_clan_role_id", 0))
+            except (TypeError, ValueError):
+                continue
+            submitted_at = self._parse_utc(raw_match.get("created_at"))
+            if (
+                {submitter_role, opponent_role} == target_roles
+                and submitted_at is not None
+                and (not_before is None or submitted_at >= not_before)
+            ):
+                candidates.append((submitted_at, raw_match))
+        if not candidates:
+            return None
+        submitted_at, match = min(candidates, key=lambda item: item[0])
+        submitter_role = int(match["submitter_clan_role_id"])
+        opponent_role = int(match["opponent_clan_role_id"])
+        return {
+            "submitted_at": submitted_at,
+            "status": str(match.get("status") or "pending"),
+            "score_text": (
+                f"{role_names.get(submitter_role, clans[0])} {int(match.get('submitter_score', 0))}–"
+                f"{int(match.get('opponent_score', 0))} {role_names.get(opponent_role, clans[1])}"
+            ),
+        }
+
     def _score_submission_for_event(
         self,
         event: dict,
@@ -350,25 +410,51 @@ class EventDisplayCog(commands.Cog):
         start = self._parse_utc(event.get("start_time"))
         if clans is None or start is None:
             return None
-        target_roles = {CLAN_ROLE_IDS[clans[0]], CLAN_ROLE_IDS[clans[1]]}
-        candidates: list[tuple[datetime, dict]] = []
-        for raw_match in pending_matches.values():
-            if not isinstance(raw_match, dict):
+        return self._score_submission_for_fixture(clans, pending_matches, not_before=start)
+
+    def _missing_current_window_fixtures(
+        self,
+        events: list[discord.ScheduledEvent],
+        *,
+        now: Optional[datetime] = None,
+    ) -> list[tuple[str, int, str, str]]:
+        current = now or datetime.now(timezone.utc)
+        active_rounds = [
+            round_no
+            for round_no, (start, end) in ROUND_WINDOWS.items()
+            if start <= current.date() <= end
+        ]
+        if not active_rounds:
+            return []
+
+        represented: set[tuple[int, frozenset[str]]] = set()
+        for event in events:
+            fixture_key = self._event_fixture_key(str(event.name or ""))
+            if fixture_key is not None:
+                represented.add(fixture_key)
+
+        # A fixture already completed during the current window should not be
+        # reintroduced as an uncreated placeholder after Discord removes it.
+        try:
+            with open(EVENTS_JSON_PATH, "r", encoding="utf-8") as f:
+                history = json.load(f)
+        except Exception:
+            history = {}
+        for raw_event in history.values() if isinstance(history, dict) else []:
+            if not isinstance(raw_event, dict) or str(raw_event.get("status") or "").lower() == "cancelled":
                 continue
-            try:
-                match_roles = {
-                    int(raw_match.get("submitter_clan_role_id", 0)),
-                    int(raw_match.get("opponent_clan_role_id", 0)),
-                }
-            except (TypeError, ValueError):
-                continue
-            submitted_at = self._parse_utc(raw_match.get("created_at"))
-            if match_roles == target_roles and submitted_at is not None and submitted_at >= start:
-                candidates.append((submitted_at, raw_match))
-        if not candidates:
-            return None
-        submitted_at, match = min(candidates, key=lambda item: item[0])
-        return {"submitted_at": submitted_at, "status": str(match.get("status") or "pending")}
+            fixture_key = self._event_fixture_key(str(raw_event.get("name") or ""))
+            end = self._parse_utc(raw_event.get("end_time")) or self._parse_utc(raw_event.get("start_time"))
+            if fixture_key is not None and end is not None and end <= current:
+                represented.add(fixture_key)
+
+        missing: list[tuple[str, int, str, str]] = []
+        for division, rounds in DIVISION_FIXTURES_BY_ROUND.items():
+            for round_no in active_rounds:
+                for clan_a, clan_b in rounds.get(round_no, []):
+                    if (round_no, frozenset((clan_a, clan_b))) not in represented:
+                        missing.append((division, round_no, clan_a, clan_b))
+        return missing
 
     async def _ensure_past_archive_thread(
         self,
@@ -404,7 +490,7 @@ class EventDisplayCog(commands.Cog):
     async def _archive_event_message(
         self,
         guild: discord.Guild,
-        archive_thread: discord.Thread,
+        archive_channel: discord.TextChannel | discord.Thread,
         event: dict,
         start: datetime,
         score_line: str,
@@ -414,7 +500,7 @@ class EventDisplayCog(commands.Cog):
         message_id = self.past_archive_message_ids.get(event_key)
         if isinstance(message_id, int):
             try:
-                archive_message = await archive_thread.fetch_message(message_id)
+                archive_message = await archive_channel.fetch_message(message_id)
             except Exception:
                 archive_message = None
 
@@ -429,27 +515,31 @@ class EventDisplayCog(commands.Cog):
             description=description or None,
             color=EMBED_COLOR,
         )
-        detail_embed.add_field(name="Played", value=f"<t:{int(start.timestamp())}:F>", inline=False)
+        if event.get("missed_window"):
+            detail_embed.add_field(
+                name="Status",
+                value=f"\u26a0\ufe0f Not played during the Round {event.get('round_no')} window",
+                inline=False,
+            )
+            detail_embed.add_field(name="Round window", value=str(event.get("round_window") or "Unknown"), inline=False)
+        else:
+            detail_embed.add_field(name="Played", value=f"<t:{int(start.timestamp())}:F>", inline=False)
         if event.get("location"):
             detail_embed.add_field(name="Location", value=str(event["location"]), inline=False)
         detail_embed.add_field(name="Score submission", value=score_line, inline=False)
         try:
-            if archive_thread.archived:
-                await archive_thread.edit(archived=False)
+            if isinstance(archive_channel, discord.Thread) and archive_channel.archived:
+                await archive_channel.edit(archived=False)
             if archive_message is None:
-                archive_message = await archive_thread.send(embed=detail_embed)
+                archive_message = await archive_channel.send(embed=detail_embed)
                 self.past_archive_message_ids[event_key] = archive_message.id
                 self._save_past_display_message_id()
-            else:
+            elif not archive_message.embeds or archive_message.embeds[0].to_dict() != detail_embed.to_dict():
                 await archive_message.edit(embed=detail_embed)
         except Exception:
             logger.warning("Could not update archive entry for event %s.", event_key, exc_info=True)
             return None
-        return _discord_message_url(
-            guild_id=guild.id,
-            channel_id=archive_thread.id,
-            message_id=archive_message.id,
-        )
+        return f"https://discord.com/channels/{guild.id}/{archive_channel.id}/{archive_message.id}"
 
     async def _refresh_past_events_board(self, guild: discord.Guild) -> None:
         channel = guild.get_channel(PAST_EVENTS_DISPLAY_CHANNEL_ID)
@@ -483,6 +573,7 @@ class EventDisplayCog(commands.Cog):
         season_start = datetime.combine(season_start_date, time.min, tzinfo=timezone.utc)
         now = datetime.now(timezone.utc)
         past_events: list[tuple[datetime, dict]] = []
+        completed_fixture_keys: set[tuple[int, frozenset[str]]] = set()
         for raw_event in history.values() if isinstance(history, dict) else []:
             if not isinstance(raw_event, dict) or self._event_clans(str(raw_event.get("name") or "")) is None:
                 continue
@@ -492,14 +583,69 @@ class EventDisplayCog(commands.Cog):
             end = self._parse_utc(raw_event.get("end_time")) or start
             if start is not None and end is not None and season_start <= start and end <= now:
                 past_events.append((start, raw_event))
+                fixture_key = self._event_fixture_key(str(raw_event.get("name") or ""))
+                if fixture_key is not None:
+                    completed_fixture_keys.add(fixture_key)
+
+        # Add every scheduled fixture whose round window closed without a
+        # completed Discord event, so missed matches do not disappear.
+        for division, rounds in DIVISION_FIXTURES_BY_ROUND.items():
+            for round_no, fixtures in rounds.items():
+                round_dates = ROUND_WINDOWS.get(round_no)
+                if round_dates is None:
+                    continue
+                round_start_date, round_end_date = round_dates
+                window_end = datetime.combine(round_end_date, time.max, tzinfo=timezone.utc)
+                if window_end >= now:
+                    continue
+                for clan_a, clan_b in fixtures:
+                    fixture_key = (round_no, frozenset((clan_a, clan_b)))
+                    if fixture_key in completed_fixture_keys:
+                        continue
+                    past_events.append(
+                        (
+                            window_end,
+                            {
+                                "id": f"missed-r{round_no}-{clan_a}-{clan_b}",
+                                "name": self._fixture_title(division, round_no, clan_a, clan_b),
+                                "start_time": datetime.combine(
+                                    round_start_date,
+                                    time.min,
+                                    tzinfo=timezone.utc,
+                                ).isoformat(),
+                                "end_time": window_end.isoformat(),
+                                "missed_window": True,
+                                "round_no": round_no,
+                                "round_window": format_round_window(round_no),
+                            },
+                        )
+                    )
         past_events.sort(key=lambda item: item[0], reverse=True)
+
+        board_message: Optional[discord.Message] = None
+        if self.past_display_message_id:
+            try:
+                board_message = await channel.fetch_message(self.past_display_message_id)
+            except Exception:
+                board_message = None
+        if board_message is None:
+            board_message = await channel.send(
+                embed=discord.Embed(
+                    title="Past League Events",
+                    description="Preparing the public event archive...",
+                    color=EMBED_COLOR,
+                )
+            )
+            self.past_display_message_id = board_message.id
+            self._save_past_display_message_id()
+        archive_thread = await self._ensure_past_archive_thread(guild, board_message)
 
         embed = discord.Embed(
             title="Past League Events",
             description=(
-                f"Fixtures completed since <t:{int(season_start.timestamp())}:D>."
+                f"Completed and missed fixtures since <t:{int(season_start.timestamp())}:D>."
                 if past_events else
-                f"No completed fixtures since <t:{int(season_start.timestamp())}:D>."
+                f"No completed or missed fixtures since <t:{int(season_start.timestamp())}:D>."
             ),
             color=EMBED_COLOR,
             timestamp=now,
@@ -508,36 +654,36 @@ class EventDisplayCog(commands.Cog):
         if not isinstance(pending_matches, dict):
             pending_matches = {}
         for start, event in past_events[:25]:
-            event_url, link_label = self._past_event_link(guild.id, event)
             title = self._format_event_title(guild, str(event.get("name") or "Fixture"))
             submission = self._score_submission_for_event(event, pending_matches)
             if submission is None:
-                score_line = "❌ Score not submitted"
+                score_line = "\u274c Score not submitted"
             else:
                 submitted_at = submission["submitted_at"]
-                score_line = f"✅ Score submitted <t:{int(submitted_at.timestamp())}:F>"
+                score_line = (
+                    f"\u2705 **{submission['score_text']}**\n"
+                    f"Submitted <t:{int(submitted_at.timestamp())}:F>"
+                )
+            archive_url = await self._archive_event_message(
+                guild,
+                archive_thread or channel,
+                event,
+                start,
+                score_line,
+            )
+            title_line = f"**[{title}]({archive_url})**" if archive_url else f"**{title}**"
+            timing_line = (
+                f"\u26a0\ufe0f Missed window: {event.get('round_window')}"
+                if event.get("missed_window")
+                else f"<t:{int(start.timestamp())}:F>"
+            )
             embed.add_field(
                 name="\u200b",
-                value=f"**{title}** · [{link_label}]({event_url})\n<t:{int(start.timestamp())}:F>\n{score_line}",
+                value=f"{title_line}\n{timing_line}\n{score_line}",
                 inline=False,
             )
         embed.set_footer(text="Last updated")
-
-        message: Optional[discord.Message] = None
-        if self.past_display_message_id:
-            try:
-                message = await channel.fetch_message(self.past_display_message_id)
-            except Exception:
-                message = None
-        if message is not None:
-            try:
-                await message.edit(embed=embed)
-                return
-            except Exception:
-                logger.warning("Failed to edit the past-events board; posting a replacement.", exc_info=True)
-        new_message = await channel.send(embed=embed)
-        self.past_display_message_id = new_message.id
-        self._save_past_display_message_id()
+        await board_message.edit(embed=embed)
 
     async def refresh_past_events_board(self, guild: discord.Guild) -> None:
         """Refresh the public past-events board after an external data change."""
@@ -776,9 +922,11 @@ class EventDisplayCog(commands.Cog):
             timestamp=datetime.utcnow()
         )
 
-        if not events:
+        missing_fixtures = self._missing_current_window_fixtures(events)
+
+        if not events and not missing_fixtures:
             embed.description = "No upcoming events scheduled."
-        else:
+        if events:
             for event in events:
                 thread_url: Optional[str] = None
                 if ENABLE_EVENT_THREADS and isinstance(self._thread_state, dict):
@@ -860,6 +1008,23 @@ class EventDisplayCog(commands.Cog):
                     value=f"📌 **[{self._format_event_title(guild, event.name)}]({event.url})**\n{field_value}",
                     inline=False
                 )
+
+        for division, round_no, clan_a, clan_b in missing_fixtures:
+            if len(embed.fields) >= 25:
+                break
+            title = self._format_event_title(
+                guild,
+                self._fixture_title(division, round_no, clan_a, clan_b),
+            )
+            embed.add_field(
+                name="\u200b",
+                value=(
+                    f"\U0001f7e0 **{title}**\n"
+                    f"**Round window:** {format_round_window(round_no)}\n"
+                    "**Status:** Not fully organised - no upcoming Discord event has been created."
+                ),
+                inline=False,
+            )
 
         embed.set_footer(text="Last updated")
         
