@@ -13,6 +13,7 @@ from discord.ext import commands, tasks
 from data_paths import data_path
 from fixture_store import effective_status as ledger_effective_status
 from fixture_store import fixture_id_for as ledger_fixture_id_for
+from fixture_store import fixture_for_deleted_event as ledger_fixture_for_deleted_event
 from fixture_store import get_fixture as ledger_get_fixture
 from fixture_store import list_fixture_history as ledger_list_fixture_history
 from fixture_store import list_fixture_views
@@ -935,7 +936,17 @@ class EventDisplayCog(commands.Cog):
 
                 # Fetch scheduled events
                 events = await guild.fetch_scheduled_events(with_counts=True)
+                tombstoned_event_ids: set[int] = set()
                 for event in sorted(events, key=lambda item: item.start_time or datetime.min.replace(tzinfo=timezone.utc)):
+                    if ledger_fixture_for_deleted_event(event.id) is not None:
+                        tombstoned_event_ids.add(event.id)
+                        try:
+                            await event.delete(reason="Removing a previously deleted league fixture event")
+                        except discord.NotFound:
+                            pass
+                        except Exception:
+                            logger.warning("Could not re-delete tombstoned event %s.", event.id, exc_info=True)
+                        continue
                     status_name = str(getattr(event.status, "name", event.status)).lower()
                     if status_name in {"cancelled", "canceled"}:
                         fixture_id = ledger_unlink_event(event.id, actor="discord:cancel")
@@ -974,7 +985,8 @@ class EventDisplayCog(commands.Cog):
                             await self.clear_organiser_for_reorganisation(fixture_id, actor="Missing Discord event")
                 filtered_events = [
                     e for e in events
-                    if e.status in (discord.EventStatus.scheduled, discord.EventStatus.active)
+                    if e.id not in tombstoned_event_ids
+                    and e.status in (discord.EventStatus.scheduled, discord.EventStatus.active)
                     and (e.end_time or e.start_time) is not None
                     and (e.end_time or e.start_time).astimezone(timezone.utc) > now
                 ]

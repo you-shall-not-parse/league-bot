@@ -81,6 +81,7 @@ def initialize() -> None:
                 thread_id INTEGER,
                 control_message_id INTEGER,
                 scheduled_event_id INTEGER,
+                deleted_event_id INTEGER,
                 event_cancelled_at TEXT,
                 score_match_id TEXT,
                 score_a INTEGER,
@@ -109,6 +110,8 @@ def initialize() -> None:
         }
         if "event_cancelled_at" not in fixture_columns:
             connection.execute("ALTER TABLE fixtures ADD COLUMN event_cancelled_at TEXT")
+        if "deleted_event_id" not in fixture_columns:
+            connection.execute("ALTER TABLE fixtures ADD COLUMN deleted_event_id INTEGER")
         season_year = min(start for start, _ in ROUND_WINDOWS.values()).year
         now = _now_iso()
         for division, rounds in DIVISION_FIXTURES_BY_ROUND.items():
@@ -143,6 +146,7 @@ def initialize() -> None:
                         ),
                     )
     migrate_legacy_data()
+    repair_deleted_event_relinks()
 
 
 def _row_dict(row: Optional[sqlite3.Row]) -> Optional[dict[str, Any]]:
@@ -153,6 +157,17 @@ def get_fixture(fixture_id: str) -> Optional[dict[str, Any]]:
     initialize_schema_only()
     with _connect() as connection:
         return _row_dict(connection.execute("SELECT * FROM fixtures WHERE fixture_id = ?", (fixture_id,)).fetchone())
+
+
+def fixture_for_deleted_event(event_id: int) -> Optional[dict[str, Any]]:
+    initialize_schema_only()
+    with _connect() as connection:
+        return _row_dict(
+            connection.execute(
+                "SELECT * FROM fixtures WHERE deleted_event_id = ?",
+                (int(event_id),),
+            ).fetchone()
+        )
 
 
 def find_fixture(round_no: int, clan_a: str, clan_b: str) -> Optional[dict[str, Any]]:
@@ -239,7 +254,11 @@ def set_event_id(round_no: int, clan_a: str, clan_b: str, event_id: int) -> Opti
         return None
     _update(
         fixture["fixture_id"],
-        {"scheduled_event_id": int(event_id), "event_cancelled_at": None},
+        {
+            "scheduled_event_id": int(event_id),
+            "deleted_event_id": None,
+            "event_cancelled_at": None,
+        },
         action="event_linked",
     )
     return str(fixture["fixture_id"])
@@ -256,10 +275,21 @@ def sync_event(
     fixture = find_fixture(round_no, clan_a, clan_b)
     if fixture is None:
         return None
-    fields: dict[str, Any] = {"scheduled_event_id": int(event_id), "event_cancelled_at": None}
+    if (
+        fixture.get("event_cancelled_at")
+        and fixture.get("deleted_event_id") is not None
+        and int(fixture["deleted_event_id"]) == int(event_id)
+    ):
+        return str(fixture["fixture_id"])
+    fields: dict[str, Any] = {
+        "scheduled_event_id": int(event_id),
+        "deleted_event_id": None,
+        "event_cancelled_at": None,
+    }
     if start_time_utc:
         fields["agreed_datetime_utc"] = start_time_utc
-    _update(fixture["fixture_id"], fields)
+    action = "event_linked" if fixture.get("scheduled_event_id") != int(event_id) else None
+    _update(fixture["fixture_id"], fields, action=action)
     return str(fixture["fixture_id"])
 
 
@@ -278,6 +308,7 @@ def unlink_event_for_reorganisation(event_id: int, *, actor: Optional[str] = Non
         fixture_id,
         {
             "scheduled_event_id": None,
+            "deleted_event_id": int(event_id),
             "agreed_datetime_utc": None,
             "event_cancelled_at": _now_iso(),
         },
@@ -285,6 +316,38 @@ def unlink_event_for_reorganisation(event_id: int, *, actor: Optional[str] = Non
         actor=actor,
     )
     return fixture_id
+
+
+def repair_deleted_event_relinks() -> int:
+    """Repair stale API responses that re-linked an event after its deletion."""
+    initialize_schema_only()
+    repairs: list[int] = []
+    with _connect() as connection:
+        rows = connection.execute(
+            "SELECT fixture_id, scheduled_event_id FROM fixtures WHERE scheduled_event_id IS NOT NULL"
+        ).fetchall()
+        for row in rows:
+            latest = connection.execute(
+                """
+                SELECT action
+                FROM fixture_history
+                WHERE fixture_id = ?
+                  AND action IN ('event_linked', 'event_cancelled', 'event_deleted_reorganisation_required')
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (str(row["fixture_id"]),),
+            ).fetchone()
+            if latest is not None and latest["action"] in {
+                "event_cancelled",
+                "event_deleted_reorganisation_required",
+            }:
+                repairs.append(int(row["scheduled_event_id"]))
+    repaired = 0
+    for event_id in repairs:
+        if unlink_event_for_reorganisation(event_id, actor="startup:stale_deleted_event_repair") is not None:
+            repaired += 1
+    return repaired
 
 
 def _parse_iso(value: Any) -> Optional[datetime]:

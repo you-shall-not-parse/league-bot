@@ -36,7 +36,10 @@ hard-deletes the Discord scheduled event, clears its event ID and agreed date fr
 both the ledger and organiser state, removes it from Upcoming, and flags the fixture
 for reorganisation. The same de-linking happens when an event is cancelled/deleted
 directly in Discord or found missing after downtime. `/correct_fixture_event` clears
-the flag when a new event is created.
+the flag when a new event is created. The deleted Discord event ID is retained only
+as a tombstone so a stale Discord API response cannot re-link it; it is never shown
+as the fixture's current event. Startup also repairs fixtures that were re-linked by
+this race before tombstones were introduced.
 
 The public past-events board is self-contained. It does not create per-fixture or
 archive threads; any previously persisted bot-managed archive thread is removed
