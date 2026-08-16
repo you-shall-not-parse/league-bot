@@ -412,50 +412,6 @@ class EventDisplayCog(commands.Cog):
             return None
         return self._score_submission_for_fixture(clans, pending_matches, not_before=start)
 
-    def _missing_current_window_fixtures(
-        self,
-        events: list[discord.ScheduledEvent],
-        *,
-        now: Optional[datetime] = None,
-    ) -> list[tuple[str, int, str, str]]:
-        current = now or datetime.now(timezone.utc)
-        active_rounds = [
-            round_no
-            for round_no, (start, end) in ROUND_WINDOWS.items()
-            if start <= current.date() <= end
-        ]
-        if not active_rounds:
-            return []
-
-        represented: set[tuple[int, frozenset[str]]] = set()
-        for event in events:
-            fixture_key = self._event_fixture_key(str(event.name or ""))
-            if fixture_key is not None:
-                represented.add(fixture_key)
-
-        # A fixture already completed during the current window should not be
-        # reintroduced as an uncreated placeholder after Discord removes it.
-        try:
-            with open(EVENTS_JSON_PATH, "r", encoding="utf-8") as f:
-                history = json.load(f)
-        except Exception:
-            history = {}
-        for raw_event in history.values() if isinstance(history, dict) else []:
-            if not isinstance(raw_event, dict) or str(raw_event.get("status") or "").lower() == "cancelled":
-                continue
-            fixture_key = self._event_fixture_key(str(raw_event.get("name") or ""))
-            end = self._parse_utc(raw_event.get("end_time")) or self._parse_utc(raw_event.get("start_time"))
-            if fixture_key is not None and end is not None and end <= current:
-                represented.add(fixture_key)
-
-        missing: list[tuple[str, int, str, str]] = []
-        for division, rounds in DIVISION_FIXTURES_BY_ROUND.items():
-            for round_no in active_rounds:
-                for clan_a, clan_b in rounds.get(round_no, []):
-                    if (round_no, frozenset((clan_a, clan_b))) not in represented:
-                        missing.append((division, round_no, clan_a, clan_b))
-        return missing
-
     async def _ensure_past_archive_thread(
         self,
         guild: discord.Guild,
@@ -522,6 +478,13 @@ class EventDisplayCog(commands.Cog):
                 inline=False,
             )
             detail_embed.add_field(name="Round window", value=str(event.get("round_window") or "Unknown"), inline=False)
+        elif event.get("unorganised_current"):
+            detail_embed.add_field(
+                name="Status",
+                value="\U0001f7e0 Not fully organised - no Discord event has been created",
+                inline=False,
+            )
+            detail_embed.add_field(name="Round window", value=str(event.get("round_window") or "Unknown"), inline=False)
         else:
             detail_embed.add_field(name="Played", value=f"<t:{int(start.timestamp())}:F>", inline=False)
         if event.get("location"):
@@ -574,21 +537,31 @@ class EventDisplayCog(commands.Cog):
         now = datetime.now(timezone.utc)
         past_events: list[tuple[datetime, dict]] = []
         completed_fixture_keys: set[tuple[int, frozenset[str]]] = set()
+        future_fixture_keys: set[tuple[int, frozenset[str]]] = set()
+        for raw_event in history.values() if isinstance(history, dict) else []:
+            if not isinstance(raw_event, dict) or str(raw_event.get("status") or "").lower() in ("cancelled", "canceled"):
+                continue
+            fixture_key = self._event_fixture_key(str(raw_event.get("name") or ""))
+            end = self._parse_utc(raw_event.get("end_time")) or self._parse_utc(raw_event.get("start_time"))
+            if fixture_key is not None and end is not None and end > now:
+                future_fixture_keys.add(fixture_key)
         for raw_event in history.values() if isinstance(history, dict) else []:
             if not isinstance(raw_event, dict) or self._event_clans(str(raw_event.get("name") or "")) is None:
                 continue
-            if str(raw_event.get("status") or "").lower() == "cancelled":
+            if str(raw_event.get("status") or "").lower() in ("cancelled", "canceled"):
+                continue
+            fixture_key = self._event_fixture_key(str(raw_event.get("name") or ""))
+            if fixture_key in future_fixture_keys:
                 continue
             start = self._parse_utc(raw_event.get("start_time"))
             end = self._parse_utc(raw_event.get("end_time")) or start
             if start is not None and end is not None and season_start <= start and end <= now:
                 past_events.append((start, raw_event))
-                fixture_key = self._event_fixture_key(str(raw_event.get("name") or ""))
                 if fixture_key is not None:
                     completed_fixture_keys.add(fixture_key)
 
-        # Add every scheduled fixture whose round window closed without a
-        # completed Discord event, so missed matches do not disappear.
+        # Add fixtures with no event to this board. Closed rounds are marked as
+        # missed; the active round is marked as not fully organised.
         for division, rounds in DIVISION_FIXTURES_BY_ROUND.items():
             for round_no, fixtures in rounds.items():
                 round_dates = ROUND_WINDOWS.get(round_no)
@@ -596,17 +569,18 @@ class EventDisplayCog(commands.Cog):
                     continue
                 round_start_date, round_end_date = round_dates
                 window_end = datetime.combine(round_end_date, time.max, tzinfo=timezone.utc)
-                if window_end >= now:
+                if round_start_date > now.date():
                     continue
+                missed_window = window_end < now
                 for clan_a, clan_b in fixtures:
                     fixture_key = (round_no, frozenset((clan_a, clan_b)))
-                    if fixture_key in completed_fixture_keys:
+                    if fixture_key in completed_fixture_keys or fixture_key in future_fixture_keys:
                         continue
                     past_events.append(
                         (
                             window_end,
                             {
-                                "id": f"missed-r{round_no}-{clan_a}-{clan_b}",
+                                "id": f"uncreated-r{round_no}-{clan_a}-{clan_b}",
                                 "name": self._fixture_title(division, round_no, clan_a, clan_b),
                                 "start_time": datetime.combine(
                                     round_start_date,
@@ -614,7 +588,8 @@ class EventDisplayCog(commands.Cog):
                                     tzinfo=timezone.utc,
                                 ).isoformat(),
                                 "end_time": window_end.isoformat(),
-                                "missed_window": True,
+                                "missed_window": missed_window,
+                                "unorganised_current": not missed_window,
                                 "round_no": round_no,
                                 "round_window": format_round_window(round_no),
                             },
@@ -643,9 +618,9 @@ class EventDisplayCog(commands.Cog):
         embed = discord.Embed(
             title="Past League Events",
             description=(
-                f"Completed and missed fixtures since <t:{int(season_start.timestamp())}:D>."
+                f"Completed, missed, and currently unorganised fixtures since <t:{int(season_start.timestamp())}:D>."
                 if past_events else
-                f"No completed or missed fixtures since <t:{int(season_start.timestamp())}:D>."
+                f"No completed, missed, or unorganised fixtures since <t:{int(season_start.timestamp())}:D>."
             ),
             color=EMBED_COLOR,
             timestamp=now,
@@ -675,7 +650,11 @@ class EventDisplayCog(commands.Cog):
             timing_line = (
                 f"\u26a0\ufe0f Missed window: {event.get('round_window')}"
                 if event.get("missed_window")
-                else f"<t:{int(start.timestamp())}:F>"
+                else (
+                    f"\U0001f7e0 Not fully organised - current window: {event.get('round_window')}"
+                    if event.get("unorganised_current")
+                    else f"<t:{int(start.timestamp())}:F>"
+                )
             )
             embed.add_field(
                 name="\u200b",
@@ -692,6 +671,10 @@ class EventDisplayCog(commands.Cog):
                 await self._refresh_past_events_board(guild)
             except Exception:
                 logger.warning("Failed to refresh the past-events board.", exc_info=True)
+
+    def request_events_refresh(self) -> None:
+        """Queue a refresh of both the upcoming and past event boards."""
+        self._debounced_refresh(delay_seconds=0.5)
 
     def _resolve_custom_emoji(self, guild: discord.Guild, emoji_tag: str) -> str:
         """Resolve a tag like ':name:' to '<:name:id>' if possible."""
@@ -922,9 +905,7 @@ class EventDisplayCog(commands.Cog):
             timestamp=datetime.utcnow()
         )
 
-        missing_fixtures = self._missing_current_window_fixtures(events)
-
-        if not events and not missing_fixtures:
+        if not events:
             embed.description = "No upcoming events scheduled."
         if events:
             for event in events:
@@ -1008,23 +989,6 @@ class EventDisplayCog(commands.Cog):
                     value=f"📌 **[{self._format_event_title(guild, event.name)}]({event.url})**\n{field_value}",
                     inline=False
                 )
-
-        for division, round_no, clan_a, clan_b in missing_fixtures:
-            if len(embed.fields) >= 25:
-                break
-            title = self._format_event_title(
-                guild,
-                self._fixture_title(division, round_no, clan_a, clan_b),
-            )
-            embed.add_field(
-                name="\u200b",
-                value=(
-                    f"\U0001f7e0 **{title}**\n"
-                    f"**Round window:** {format_round_window(round_no)}\n"
-                    "**Status:** Not fully organised - no upcoming Discord event has been created."
-                ),
-                inline=False,
-            )
 
         embed.set_footer(text="Last updated")
         

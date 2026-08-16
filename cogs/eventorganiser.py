@@ -550,6 +550,20 @@ def _opponents_for_fixture(division: str, round_no: int, requester_clan: str) ->
 	return opponents
 
 
+def _scheduled_fixture_definition(
+	round_no: int,
+	clan_a: str,
+	clan_b: str,
+) -> Optional[tuple[str, str, str]]:
+	"""Return the configured division and canonical clan order for a fixture."""
+	target = {clan_a, clan_b}
+	for division, rounds in DIVISION_FIXTURES_BY_ROUND.items():
+		for configured_a, configured_b in rounds.get(round_no, []):
+			if {configured_a, configured_b} == target:
+				return division, configured_a, configured_b
+	return None
+
+
 def _reroll_count_for(s: FixtureState, clan: str) -> int:
 	return s.reroll_count_a if clan == s.clan_a else s.reroll_count_b
 
@@ -1013,7 +1027,17 @@ def _fixture_expired(s: FixtureState, *, now: Optional[datetime] = None) -> bool
 	except Exception:
 		return False
 	current = now or datetime.now(timezone.utc)
-	return start_dt + FIXTURE_RETENTION_AFTER_START <= current
+	retention_deadline = start_dt + FIXTURE_RETENTION_AFTER_START
+	round_window = ROUND_WINDOWS.get(s.round_no)
+	if round_window is not None:
+		_, round_end = round_window
+		round_deadline = datetime.combine(
+			round_end,
+			time.max,
+			tzinfo=timezone.utc,
+		) + FIXTURE_RETENTION_AFTER_START
+		retention_deadline = max(retention_deadline, round_deadline)
+	return retention_deadline <= current
 
 
 def _missing_core_agreements(s: FixtureState) -> list[str]:
@@ -1253,9 +1277,15 @@ async def _create_or_update_scheduled_event(
 	ev: Optional[discord.ScheduledEvent] = None
 	if s.scheduled_event_id:
 		ev = await _fetch_scheduled_event(guild, int(s.scheduled_event_id))
+		if ev is not None and ev.status in (discord.EventStatus.completed, discord.EventStatus.canceled):
+			ev = None
+		if ev is None:
+			# Discord no longer allows an expired/deleted event to be edited. Clear
+			# the stale ID so an accepted replacement time creates a new event.
+			s.scheduled_event_id = None
 
 	# Create if missing.
-	if ev is None and not s.scheduled_event_id and create_if_missing:
+	if ev is None and create_if_missing:
 		location = f"{s.server_host} Server" if (ENABLE_SIDES and s.server_host) else EVENT_LOCATION_FALLBACK
 		desc = _initial_event_description(s)
 		if append_sides_if_ready and sides_ready:
@@ -2335,6 +2365,151 @@ class EventOrganiser(commands.Cog):
 					await _auto_sync_event(self.bot, guild, thread_id)
 				except Exception:
 					continue
+
+	@app_commands.guilds(discord.Object(id=GUILD_ID))
+	@app_commands.guild_only()
+	@app_commands.command(
+		name="correct_fixture_event",
+		description="Admin: correct or recreate a fixture event at a new UTC date/time",
+	)
+	@app_commands.rename(date_text="date", time_text="time")
+	@app_commands.describe(
+		round_no="League round number",
+		clan_a="First clan",
+		clan_b="Opposing clan",
+		date_text="New date in DD/MM/YYYY format",
+		time_text="New UTC time in HH:MM format",
+	)
+	@app_commands.choices(
+		clan_a=[app_commands.Choice(name=clan, value=clan) for clan in CLAN_ROLE_IDS],
+		clan_b=[app_commands.Choice(name=clan, value=clan) for clan in CLAN_ROLE_IDS],
+	)
+	async def correct_fixture_event(
+		self,
+		interaction: discord.Interaction,
+		round_no: int,
+		clan_a: app_commands.Choice[str],
+		clan_b: app_commands.Choice[str],
+		date_text: str,
+		time_text: str,
+	):
+		if interaction.guild is None or not isinstance(interaction.user, discord.Member):
+			await interaction.response.send_message("Server only.", ephemeral=True)
+			return
+		if not interaction.user.guild_permissions.administrator:
+			await interaction.response.send_message("Administrator permission is required.", ephemeral=True)
+			return
+
+		fixture = _scheduled_fixture_definition(round_no, clan_a.value, clan_b.value)
+		if fixture is None:
+			await interaction.response.send_message(
+				"Those clans are not a configured fixture in that round.",
+				ephemeral=True,
+			)
+			return
+		try:
+			start_dt = _parse_datetime_utc(date_text, time_text)
+		except ValueError:
+			await interaction.response.send_message(
+				"Invalid date/time. Use `DD/MM/YYYY` and `HH:MM` (UTC).",
+				ephemeral=True,
+			)
+			return
+		if start_dt <= datetime.now(timezone.utc):
+			await interaction.response.send_message("The corrected event time must be in the future.", ephemeral=True)
+			return
+
+		await interaction.response.defer(ephemeral=True, thinking=True)
+		division, configured_a, configured_b = fixture
+		state = _load_state()
+		tracked_state: Optional[FixtureState] = None
+		for raw in state.get("threads", {}).values():
+			if not isinstance(raw, dict):
+				continue
+			candidate = _dict_to_state(raw)
+			if candidate.round_no == round_no and {candidate.clan_a, candidate.clan_b} == {configured_a, configured_b}:
+				tracked_state = candidate
+				break
+
+		event: Optional[discord.ScheduledEvent] = None
+		if tracked_state is not None:
+			tracked_state.agreed_datetime_utc = start_dt.isoformat()
+			tracked_state.proposed_datetime_utc = None
+			tracked_state.proposed_datetime_by = None
+			tracked_state.score_reminder_sent_at = None
+			tracked_state.datetime_history.append(
+				{"by": "Admin", "action": "corrected", "dt": start_dt.isoformat()}
+			)
+			state["threads"][tracked_state.key] = _state_to_dict(tracked_state)
+			_save_state(state)
+			event = await _create_or_update_scheduled_event(
+				interaction.client,
+				guild=interaction.guild,
+				s=tracked_state,
+				create_if_missing=True,
+				append_sides_if_ready=True,
+			)
+
+		# A pruned or incomplete organiser record may not be able to create the
+		# event, so repair the public calendar entry directly as a fallback.
+		if event is None:
+			try:
+				current_events = await interaction.guild.fetch_scheduled_events(with_counts=False)
+			except Exception:
+				current_events = []
+			name_tokens = (f"Round {round_no}:", configured_a, configured_b)
+			event = next(
+				(
+					candidate
+					for candidate in current_events
+					if all(token.lower() in str(candidate.name or "").lower() for token in name_tokens)
+				),
+				None,
+			)
+			end_dt = start_dt + timedelta(hours=2)
+			if event is not None:
+				try:
+					event = await event.edit(start_time=start_dt, end_time=end_dt)
+				except Exception:
+					event = None
+			if event is None:
+				fallback_state = tracked_state or FixtureState(
+					thread_id=0,
+					clan_a=configured_a,
+					clan_b=configured_b,
+					round_no=round_no,
+					division=division,
+				)
+				try:
+					event = await interaction.guild.create_scheduled_event(
+						name=_with_status_emoji(_fixture_title(fallback_state), sides_agreed=False),
+						start_time=start_dt,
+						end_time=end_dt,
+						privacy_level=discord.PrivacyLevel.guild_only,
+						entity_type=discord.EntityType.external,
+						location=EVENT_LOCATION_FALLBACK,
+						description="Administrator-corrected league fixture.",
+					)
+				except Exception:
+					event = None
+
+		if event is None:
+			await interaction.followup.send("Could not correct or recreate the Discord event.", ephemeral=True)
+			return
+		if tracked_state is not None:
+			tracked_state.scheduled_event_id = event.id
+			state = _load_state()
+			state["threads"][tracked_state.key] = _state_to_dict(tracked_state)
+			_save_state(state)
+			asyncio.create_task(_refresh_thread(interaction.client, tracked_state.thread_id))
+		events_cog = interaction.client.get_cog("EventDisplayCog")
+		request_refresh = getattr(events_cog, "request_events_refresh", None)
+		if callable(request_refresh):
+			request_refresh()
+		await interaction.followup.send(
+			f"Corrected {configured_a} vs {configured_b} to <t:{int(start_dt.timestamp())}:F>: {event.url}",
+			ephemeral=True,
+		)
 
 	@app_commands.guilds(discord.Object(id=GUILD_ID))
 	@app_commands.guild_only()
