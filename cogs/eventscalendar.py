@@ -72,6 +72,8 @@ class EventDisplayCog(commands.Cog):
         self.bot = bot
         self.display_message_id: Optional[int] = self._load_display_message_id()
         self.past_display_message_id: Optional[int] = self._load_past_display_message_id()
+        self.past_archive_thread_id: Optional[int] = self._load_past_archive_thread_id()
+        self.past_archive_message_ids: dict[str, int] = self._load_past_archive_message_ids()
         self._target_guild_id: Optional[int] = None
         self._update_lock = asyncio.Lock()
         self._debounce_task: Optional[asyncio.Task] = None
@@ -287,12 +289,33 @@ class EventDisplayCog(commands.Cog):
             state = {
                 "channel_id": PAST_EVENTS_DISPLAY_CHANNEL_ID,
                 "message_id": self.past_display_message_id,
+                "archive_thread_id": self.past_archive_thread_id,
+                "archive_message_ids": self.past_archive_message_ids,
                 "updated_at": datetime.now(timezone.utc).isoformat(),
             }
             with open(PAST_EVENTS_DISPLAY_STATE_PATH, "w", encoding="utf-8") as f:
                 json.dump(state, f, indent=2, ensure_ascii=False)
         except Exception:
             logger.warning("Failed to persist past-events display state.", exc_info=True)
+
+    @staticmethod
+    def _load_past_display_state() -> dict:
+        try:
+            with open(PAST_EVENTS_DISPLAY_STATE_PATH, "r", encoding="utf-8") as f:
+                state = json.load(f)
+            return state if isinstance(state, dict) else {}
+        except Exception:
+            return {}
+
+    def _load_past_archive_thread_id(self) -> Optional[int]:
+        value = self._load_past_display_state().get("archive_thread_id")
+        return value if isinstance(value, int) else None
+
+    def _load_past_archive_message_ids(self) -> dict[str, int]:
+        raw = self._load_past_display_state().get("archive_message_ids", {})
+        if not isinstance(raw, dict):
+            return {}
+        return {str(key): value for key, value in raw.items() if isinstance(value, int)}
 
     @staticmethod
     def _parse_utc(value: object) -> Optional[datetime]:
@@ -347,17 +370,86 @@ class EventDisplayCog(commands.Cog):
         submitted_at, match = min(candidates, key=lambda item: item[0])
         return {"submitted_at": submitted_at, "status": str(match.get("status") or "pending")}
 
-    @staticmethod
-    def _past_event_link(guild_id: int, event: dict) -> tuple[str, str]:
-        """Prefer the durable fixture-thread link over an expired event page."""
-        description = str(event.get("description") or "")
-        thread_match = re.search(r"Thread:\s*<#(\d+)>", description, flags=re.IGNORECASE)
-        if thread_match:
-            thread_id = thread_match.group(1)
-            return f"https://discord.com/channels/{guild_id}/{thread_id}", "Fixture thread"
-        event_id = event.get("id")
-        event_url = str(event.get("url") or f"https://discord.com/events/{guild_id}/{event_id}")
-        return event_url, "Discord event"
+    async def _ensure_past_archive_thread(
+        self,
+        guild: discord.Guild,
+        board_message: discord.Message,
+    ) -> Optional[discord.Thread]:
+        candidate_ids = [self.past_archive_thread_id, board_message.id]
+        for thread_id in candidate_ids:
+            if not isinstance(thread_id, int):
+                continue
+            thread = guild.get_thread(thread_id)
+            if thread is None:
+                try:
+                    fetched = await guild.fetch_channel(thread_id)
+                    thread = fetched if isinstance(fetched, discord.Thread) else None
+                except Exception:
+                    thread = None
+            if isinstance(thread, discord.Thread) and not thread.is_private():
+                self.past_archive_thread_id = thread.id
+                return thread
+        try:
+            thread = await board_message.create_thread(
+                name="Past Event Archive",
+                auto_archive_duration=10080,
+            )
+            self.past_archive_thread_id = thread.id
+            self._save_past_display_message_id()
+            return thread
+        except Exception:
+            logger.warning("Could not create the public past-event archive thread.", exc_info=True)
+            return None
+
+    async def _archive_event_message(
+        self,
+        guild: discord.Guild,
+        archive_thread: discord.Thread,
+        event: dict,
+        start: datetime,
+        score_line: str,
+    ) -> Optional[str]:
+        event_key = str(event.get("id") or f"{event.get('name')}:{start.isoformat()}")
+        archive_message: Optional[discord.Message] = None
+        message_id = self.past_archive_message_ids.get(event_key)
+        if isinstance(message_id, int):
+            try:
+                archive_message = await archive_thread.fetch_message(message_id)
+            except Exception:
+                archive_message = None
+
+        description = re.sub(
+            r"^\s*Thread:\s*<#\d+>\s*$",
+            "",
+            str(event.get("description") or ""),
+            flags=re.IGNORECASE | re.MULTILINE,
+        ).strip()
+        detail_embed = discord.Embed(
+            title=self._format_event_title(guild, str(event.get("name") or "Fixture")),
+            description=description or None,
+            color=EMBED_COLOR,
+        )
+        detail_embed.add_field(name="Played", value=f"<t:{int(start.timestamp())}:F>", inline=False)
+        if event.get("location"):
+            detail_embed.add_field(name="Location", value=str(event["location"]), inline=False)
+        detail_embed.add_field(name="Score submission", value=score_line, inline=False)
+        try:
+            if archive_thread.archived:
+                await archive_thread.edit(archived=False)
+            if archive_message is None:
+                archive_message = await archive_thread.send(embed=detail_embed)
+                self.past_archive_message_ids[event_key] = archive_message.id
+                self._save_past_display_message_id()
+            else:
+                await archive_message.edit(embed=detail_embed)
+        except Exception:
+            logger.warning("Could not update archive entry for event %s.", event_key, exc_info=True)
+            return None
+        return _discord_message_url(
+            guild_id=guild.id,
+            channel_id=archive_thread.id,
+            message_id=archive_message.id,
+        )
 
     async def _refresh_past_events_board(self, guild: discord.Guild) -> None:
         channel = guild.get_channel(PAST_EVENTS_DISPLAY_CHANNEL_ID)
