@@ -263,23 +263,25 @@ def sync_event(
     return str(fixture["fixture_id"])
 
 
-def mark_event_cancelled(event_id: int, *, actor: Optional[str] = None) -> Optional[str]:
-    """Retain a fixture while marking its Discord event as cancelled or missing."""
+def unlink_event_for_reorganisation(event_id: int, *, actor: Optional[str] = None) -> Optional[str]:
+    """Forget a deleted Discord event and require the fixture to be organised again."""
     initialize_schema_only()
     with _connect() as connection:
         row = connection.execute(
-            "SELECT fixture_id, event_cancelled_at FROM fixtures WHERE scheduled_event_id = ?",
+            "SELECT fixture_id FROM fixtures WHERE scheduled_event_id = ?",
             (int(event_id),),
         ).fetchone()
     if row is None:
         return None
     fixture_id = str(row["fixture_id"])
-    if row["event_cancelled_at"]:
-        return fixture_id
     _update(
         fixture_id,
-        {"event_cancelled_at": _now_iso()},
-        action="event_cancelled",
+        {
+            "scheduled_event_id": None,
+            "agreed_datetime_utc": None,
+            "event_cancelled_at": _now_iso(),
+        },
+        action="event_deleted_reorganisation_required",
         actor=actor,
     )
     return fixture_id
@@ -474,12 +476,13 @@ def migrate_legacy_data() -> None:
             fixture = None
         if fixture is None:
             continue
-        fields = {
+        fields: dict[str, Any] = {
             "thread_id": raw.get("thread_id"),
             "control_message_id": raw.get("control_message_id"),
-            "scheduled_event_id": raw.get("scheduled_event_id"),
-            "agreed_datetime_utc": raw.get("agreed_datetime_utc"),
         }
+        if not fixture.get("event_cancelled_at"):
+            fields["scheduled_event_id"] = raw.get("scheduled_event_id")
+            fields["agreed_datetime_utc"] = raw.get("agreed_datetime_utc")
         _update(fixture["fixture_id"], {k: v for k, v in fields.items() if v is not None})
 
     try:
@@ -499,7 +502,7 @@ def migrate_legacy_data() -> None:
         if round_match is None or len(clans) != 2:
             continue
         fixture = find_fixture(int(round_match.group(1)), clans[0], clans[1])
-        if fixture is None:
+        if fixture is None or fixture.get("event_cancelled_at"):
             continue
         fields: dict[str, Any] = {}
         if event.get("id") and not fixture.get("scheduled_event_id"):

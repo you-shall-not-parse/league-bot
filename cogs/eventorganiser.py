@@ -2280,6 +2280,51 @@ class EventOrganiser(commands.Cog):
 		self.cleanup_expired_fixtures.cancel()
 		self.send_fixture_reminders.cancel()
 
+	async def clear_fixture_event_for_reorganisation(
+		self,
+		*,
+		round_no: int,
+		clan_a: str,
+		clan_b: str,
+		actor: str,
+	) -> bool:
+		"""Clear organiser date/event state after an admin deletes the Discord event."""
+		thread_id: Optional[int] = None
+		async with self._lock:
+			state = _load_state()
+			for raw in state.get("threads", {}).values():
+				if not isinstance(raw, dict):
+					continue
+				fixture = _dict_to_state(raw)
+				if fixture.round_no != round_no or {fixture.clan_a, fixture.clan_b} != {clan_a, clan_b}:
+					continue
+				needs_clear = any(
+					value is not None
+					for value in (
+						fixture.proposed_datetime_utc,
+						fixture.proposed_datetime_by,
+						fixture.agreed_datetime_utc,
+						fixture.scheduled_event_id,
+					)
+				)
+				fixture.proposed_datetime_utc = None
+				fixture.proposed_datetime_by = None
+				fixture.agreed_datetime_utc = None
+				fixture.scheduled_event_id = None
+				fixture.score_reminder_sent_at = None
+				if needs_clear:
+					fixture.datetime_history.append(
+						{"by": actor, "action": "event deleted - reorganisation required", "dt": None}
+					)
+					state["threads"][fixture.key] = _state_to_dict(fixture)
+					_save_state(state)
+				thread_id = fixture.thread_id
+				break
+		if thread_id is not None:
+			asyncio.create_task(_refresh_thread(self.bot, thread_id))
+			return True
+		return False
+
 	@tasks.loop(minutes=15)
 	async def cleanup_expired_fixtures(self):
 		await _prune_expired_fixture_state(self.bot)

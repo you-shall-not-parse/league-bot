@@ -16,8 +16,8 @@ from fixture_store import fixture_id_for as ledger_fixture_id_for
 from fixture_store import get_fixture as ledger_get_fixture
 from fixture_store import list_fixture_history as ledger_list_fixture_history
 from fixture_store import list_fixture_views
-from fixture_store import mark_event_cancelled as ledger_mark_event_cancelled
 from fixture_store import sync_event as ledger_sync_event
+from fixture_store import unlink_event_for_reorganisation as ledger_unlink_event
 from league_config import (
     ADMIN_FIXTURE_BOARD_CHANNEL_ID,
     EMBED_COLOR,
@@ -565,7 +565,7 @@ class EventDisplayCog(commands.Cog):
                 f"\u26a0\ufe0f Missed window: {round_window}"
                 if status == "missed"
                 else (
-                    f"\U0001f534 Event cancelled or missing - admin action required"
+                    f"\U0001f534 Event deleted - fixture needs reorganisation"
                     if status == "event_cancelled"
                     else (
                         f"\U0001f7e0 Not fully organised - current window: {round_window}"
@@ -603,7 +603,7 @@ class EventDisplayCog(commands.Cog):
             "unorganised": ("\U0001f534", "Not fully organised", "action"),
             "played_awaiting_score": ("\U0001f534", "Played - score required", "action"),
             "disputed": ("\U0001f534", "Score disputed", "action"),
-            "event_cancelled": ("\U0001f534", "Event cancelled or missing", "action"),
+            "event_cancelled": ("\U0001f534", "Event deleted - needs reorganisation", "action"),
             "planning": ("\U0001f7e0", "Organisation in progress", "progress"),
             "score_submitted": ("\U0001f7e0", "Score awaiting confirmation", "progress"),
             "planned": ("\U0001f7e2", "Planned", "planned"),
@@ -620,7 +620,7 @@ class EventDisplayCog(commands.Cog):
         cancelled = self._parse_utc(fixture.get("event_cancelled_at"))
         details = [f"**Status:** {status_label}"]
         if status == "event_cancelled" and cancelled is not None:
-            details.append(f"**Detected:** <t:{int(cancelled.timestamp())}:R>")
+            details.append(f"**Deleted/detected:** <t:{int(cancelled.timestamp())}:R>")
         details.append(
             f"**Date:** <t:{int(agreed.timestamp())}:F>"
             if agreed is not None
@@ -834,6 +834,21 @@ class EventDisplayCog(commands.Cog):
         """Run and report an immediate refresh for admin correction workflows."""
         return await self._update_once(reason=reason)
 
+    async def clear_organiser_for_reorganisation(self, fixture_id: str, *, actor: str) -> bool:
+        fixture = ledger_get_fixture(fixture_id)
+        organiser = self.bot.get_cog("EventOrganiser")
+        clear_state = getattr(organiser, "clear_fixture_event_for_reorganisation", None)
+        if fixture is None or not callable(clear_state):
+            return False
+        return bool(
+            await clear_state(
+                round_no=int(fixture["round_no"]),
+                clan_a=str(fixture["clan_a"]),
+                clan_b=str(fixture["clan_b"]),
+                actor=actor,
+            )
+        )
+
     @app_commands.guilds(discord.Object(id=GUILD_ID))
     @app_commands.guild_only()
     @app_commands.default_permissions(administrator=True)
@@ -923,7 +938,9 @@ class EventDisplayCog(commands.Cog):
                 for event in sorted(events, key=lambda item: item.start_time or datetime.min.replace(tzinfo=timezone.utc)):
                     status_name = str(getattr(event.status, "name", event.status)).lower()
                     if status_name in {"cancelled", "canceled"}:
-                        ledger_mark_event_cancelled(event.id, actor="discord:cancel")
+                        fixture_id = ledger_unlink_event(event.id, actor="discord:cancel")
+                        if fixture_id is not None:
+                            await self.clear_organiser_for_reorganisation(fixture_id, actor="Discord cancellation")
                         continue
                     fixture_key = self._event_fixture_key(str(event.name or ""))
                     clans = self._event_clans(str(event.name or ""))
@@ -952,7 +969,9 @@ class EventDisplayCog(commands.Cog):
                         and isinstance(event_id, int)
                         and event_id not in available_event_ids
                     ):
-                        ledger_mark_event_cancelled(event_id, actor="discord:missing")
+                        fixture_id = ledger_unlink_event(event_id, actor="discord:missing")
+                        if fixture_id is not None:
+                            await self.clear_organiser_for_reorganisation(fixture_id, actor="Missing Discord event")
                 filtered_events = [
                     e for e in events
                     if e.status in (discord.EventStatus.scheduled, discord.EventStatus.active)
@@ -1063,8 +1082,9 @@ class EventDisplayCog(commands.Cog):
         event_end = scheduled_event.end_time or scheduled_event.start_time
         still_due = event_end is None or event_end.astimezone(timezone.utc) > datetime.now(timezone.utc)
         if status_name in {"cancelled", "canceled"} or still_due:
-            fixture_id = ledger_mark_event_cancelled(scheduled_event.id, actor="discord:delete")
+            fixture_id = ledger_unlink_event(scheduled_event.id, actor="discord:delete")
             if fixture_id is not None:
+                await self.clear_organiser_for_reorganisation(fixture_id, actor="Discord event deletion")
                 await self._update_once(reason=f"event_delete:{scheduled_event.id}")
                 return
         self._debounced_refresh()
@@ -1077,8 +1097,9 @@ class EventDisplayCog(commands.Cog):
         status_name = str(getattr(after.status, "name", after.status)).lower()
         if status_name in {"cancelled", "canceled"}:
             await self.save_events_to_json([after])
-            fixture_id = ledger_mark_event_cancelled(after.id, actor="discord:cancel")
+            fixture_id = ledger_unlink_event(after.id, actor="discord:cancel")
             if fixture_id is not None:
+                await self.clear_organiser_for_reorganisation(fixture_id, actor="Discord cancellation")
                 await self._update_once(reason=f"event_cancel:{after.id}")
                 return
         self._debounced_refresh()
@@ -1300,18 +1321,18 @@ class AdminFixtureActionsView(discord.ui.View):
             return
         await interaction.response.send_modal(AdminFixtureEventModal(fixture))
 
-    @discord.ui.button(label="Cancel event", emoji="\u26d4", style=discord.ButtonStyle.danger)
+    @discord.ui.button(label="Delete event", emoji="\U0001f5d1\ufe0f", style=discord.ButtonStyle.danger)
     async def cancel_event(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         if not await _require_fixture_admin(interaction):
             return
         fixture = _fixture_view(self.fixture_id)
         if fixture is None or fixture.get("status") != "planned":
-            await interaction.response.send_message("This fixture has no live planned event to cancel.", ephemeral=True)
+            await interaction.response.send_message("This fixture has no live planned event to delete.", ephemeral=True)
             return
         await interaction.response.send_message(
-            f"Cancel the Discord event for **{fixture['clan_a']} vs {fixture['clan_b']}**? "
-            "The fixture record and history will be retained.",
-            view=AdminCancelConfirmationView(self.fixture_id),
+            f"Permanently delete the Discord event for **{fixture['clan_a']} vs {fixture['clan_b']}**? "
+            "Its date and event link will be cleared, and the fixture will require reorganisation.",
+            view=AdminDeleteConfirmationView(self.fixture_id),
             ephemeral=True,
         )
 
@@ -1457,12 +1478,12 @@ class AdminFixtureScoreModal(discord.ui.Modal):
         await command.callback(scoreboard, interaction, self.match_id, str(self.score_field.value))
 
 
-class AdminCancelConfirmationView(discord.ui.View):
+class AdminDeleteConfirmationView(discord.ui.View):
     def __init__(self, fixture_id: str):
         super().__init__(timeout=120)
         self.fixture_id = fixture_id
 
-    @discord.ui.button(label="Confirm cancellation", style=discord.ButtonStyle.danger)
+    @discord.ui.button(label="Confirm deletion", style=discord.ButtonStyle.danger)
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         if not await _require_fixture_admin(interaction):
             return
@@ -1474,23 +1495,27 @@ class AdminCancelConfirmationView(discord.ui.View):
         event_id = int(fixture["scheduled_event_id"])
         try:
             event = await interaction.guild.fetch_scheduled_event(event_id)
-            status_name = str(getattr(event.status, "name", event.status)).lower()
-            if status_name not in {"cancelled", "canceled"}:
-                await event.cancel(reason=f"Cancelled from fixture admin board by {interaction.user}")
+            await event.delete(reason=f"Deleted from fixture admin board by {interaction.user}")
         except discord.NotFound:
             pass
         except Exception:
-            logger.warning("Admin board could not cancel scheduled event %s.", event_id, exc_info=True)
+            logger.warning("Admin board could not delete scheduled event %s.", event_id, exc_info=True)
             await interaction.followup.send(
-                "Discord would not cancel the event. The fixture record was left unchanged.",
+                "Discord would not delete the event. The fixture record was left unchanged.",
                 ephemeral=True,
             )
             return
-        ledger_mark_event_cancelled(event_id, actor=f"admin_button:{interaction.user.id}")
         cog = _event_display_cog(interaction)
-        refreshed = await cog.refresh_events_now(reason=f"fixture_cancel:{event_id}") if cog is not None else False
+        fixture_id = ledger_unlink_event(event_id, actor=f"admin_button:{interaction.user.id}")
+        effective_fixture_id = fixture_id or self.fixture_id
+        if cog is not None:
+            await cog.clear_organiser_for_reorganisation(
+                effective_fixture_id,
+                actor=f"Admin {interaction.user.id}",
+            )
+        refreshed = await cog.refresh_events_now(reason=f"fixture_delete:{event_id}") if cog is not None else False
         await interaction.followup.send(
-            "Event cancelled; the fixture record and history were retained."
+            "Discord event deleted and de-linked; the fixture now requires reorganisation."
             + (" All boards refreshed." if refreshed else " A board refresh failed; check the bot logs."),
             ephemeral=True,
         )
