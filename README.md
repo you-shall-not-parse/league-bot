@@ -26,11 +26,19 @@ The admin fixture-control board is maintained in channel `1538540411537330268`.
 It contains a league-health summary and one message per round, with action-required
 fixtures shown first in the summary. Its privacy is inherited from the Discord
 channel permissions, so the channel should remain restricted to league admins.
+The summary has a persistent refresh button; each round has persistent Manage
+buttons that open ephemeral controls for editing the date/event, cancelling with
+confirmation, editing a submitted score, viewing history, and refreshing boards.
+The slash commands remain available as recovery fallbacks.
 
 If a future Discord event is cancelled, deleted, or found missing after downtime,
 the fixture remains in the ledger, is removed from Upcoming, and is flagged as
 action required on the admin board. `/correct_fixture_event` clears that flag when
 it recreates the event.
+
+The public past-events board is self-contained. It does not create per-fixture or
+archive threads; any previously persisted bot-managed archive thread is removed
+after the next successful board refresh.
 
 Back up the `data` directory as part of normal bot backups. Do not manually edit
 `league.db` while the bot is running.

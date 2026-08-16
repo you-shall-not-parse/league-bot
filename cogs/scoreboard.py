@@ -1512,7 +1512,7 @@ class ScoreboardCog(commands.Cog):
 
 
 	@app_commands.guilds(discord.Object(id=GUILD_ID))
-	@app_commands.command(name="scoreboard_admin_edit_match", description="Admin: edit a confirmed match and adjust leaderboard")
+	@app_commands.command(name="scoreboard_admin_edit_match", description="Admin: edit a submitted match and adjust confirmed totals")
 	@app_commands.check(_admin_app_command_check)
 	async def scoreboard_admin_edit_match(
 		self,
@@ -1525,14 +1525,67 @@ class ScoreboardCog(commands.Cog):
 		if match is None:
 			await interaction.followup.send("Match not found.", ephemeral=True)
 			return
-		if match.status != "confirmed":
-			await interaction.followup.send("Only confirmed matches can be edited with leaderboard adjustment.", ephemeral=True)
-			return
-
 		try:
 			new_a, new_b = _parse_score(new_score)
 		except ValueError as e:
 			await interaction.followup.send(str(e), ephemeral=True)
+			return
+
+		if match.status != "confirmed":
+			match.submitter_score = int(new_a)
+			match.opponent_score = int(new_b)
+			match.status = "pending"
+			match.confirmed_by_id = None
+			match.confirmed_at = None
+			self.store.data["pending_matches"][match.match_id] = match.to_dict()
+			await self.store.save()
+			if match.fixture_id:
+				ledger_record_score(
+					match.fixture_id,
+					match_id=match.match_id,
+					submitter_role_id=match.submitter_clan_role_id,
+					submitter_score=match.submitter_score,
+					opponent_score=match.opponent_score,
+					submitted_at=match.created_at,
+					status="pending",
+				)
+			if interaction.guild is not None and match.validation_message_id:
+				channel = interaction.guild.get_channel(VALIDATION_CHANNEL_ID)
+				if channel is None:
+					try:
+						channel = await interaction.guild.fetch_channel(VALIDATION_CHANNEL_ID)
+					except Exception:
+						channel = None
+				if isinstance(channel, discord.TextChannel):
+					try:
+						message = await channel.fetch_message(match.validation_message_id)
+						embed = discord.Embed(
+							title="Match Result Corrected",
+							description=(
+								f"**{_role_name_from_id(match.submitter_clan_role_id)}** vs "
+								f"**{_role_name_from_id(match.opponent_clan_role_id)}**\n"
+								f"Corrected score: **{new_a}-{new_b}**\n\n"
+								"Opposing clan should confirm below."
+							),
+							colour=discord.Colour.orange(),
+							timestamp=datetime.now(timezone.utc),
+						)
+						embed.add_field(name="Submitted by", value=f"<@{match.submitter_id}>", inline=False)
+						footer = f"Match ID: {match.match_id}"
+						if match.fixture_id:
+							footer += f" | Fixture ID: {match.fixture_id}"
+						embed.set_footer(text=footer)
+						await message.edit(embed=embed, view=ValidationView(match.match_id))
+					except Exception:
+						log.warning("Could not update corrected validation message %s", match.validation_message_id, exc_info=True)
+			events_cog = self.bot.get_cog("EventDisplayCog")
+			request_refresh = getattr(events_cog, "request_events_refresh", None)
+			if callable(request_refresh):
+				request_refresh()
+			await interaction.followup.send(
+				f"Updated match {match_id} to {new_a}-{new_b}; it now requires opponent confirmation.",
+				ephemeral=True,
+			)
 			return
 
 		# Compute delta vs old and apply to clan_stats

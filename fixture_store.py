@@ -331,6 +331,23 @@ def list_fixture_views(*, now: Optional[datetime] = None) -> list[dict[str, Any]
     return views
 
 
+def list_fixture_history(fixture_id: str, *, limit: int = 20) -> list[dict[str, Any]]:
+    initialize_schema_only()
+    safe_limit = max(1, min(int(limit), 100))
+    with _connect() as connection:
+        rows = connection.execute(
+            """
+            SELECT action, actor, details, created_at
+            FROM fixture_history
+            WHERE fixture_id = ?
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (fixture_id, safe_limit),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
 def fixture_for_roles(role_a: int, role_b: int, *, submitted_at: Optional[str] = None) -> Optional[dict[str, Any]]:
     role_to_clan = {int(role_id): clan for clan, role_id in CLAN_ROLE_IDS.items()}
     clan_a = role_to_clan.get(int(role_a))
@@ -374,19 +391,19 @@ def record_score(
         and fixture.get("score_b") == int(score_b)
         and fixture.get("score_status") == status
         and fixture.get("score_submitted_at") == submitted_at
+        and (status == "confirmed" or fixture.get("score_confirmed_at") is None)
     ):
         return
-    _update(
-        fixture_id,
-        {
-            "score_match_id": match_id,
-            "score_a": int(score_a),
-            "score_b": int(score_b),
-            "score_status": status,
-            "score_submitted_at": submitted_at,
-        },
-        action="score_submitted",
-    )
+    fields = {
+        "score_match_id": match_id,
+        "score_a": int(score_a),
+        "score_b": int(score_b),
+        "score_status": status,
+        "score_submitted_at": submitted_at,
+    }
+    if status != "confirmed":
+        fields["score_confirmed_at"] = None
+    _update(fixture_id, fields, action="score_submitted")
 
 
 def update_score_status(match_id: str, status: str, *, confirmed_at: Optional[str] = None) -> None:

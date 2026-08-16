@@ -2551,11 +2551,24 @@ class EventOrganiser(commands.Cog):
 			_save_state(state)
 			asyncio.create_task(_refresh_thread(interaction.client, tracked_state.thread_id))
 		events_cog = interaction.client.get_cog("EventDisplayCog")
-		request_refresh = getattr(events_cog, "request_events_refresh", None)
-		if callable(request_refresh):
-			request_refresh()
+		refresh_now = getattr(events_cog, "refresh_events_now", None)
+		boards_refreshed: Optional[bool] = None
+		if callable(refresh_now):
+			boards_refreshed = await refresh_now(reason=f"fixture_correction:{interaction.user.id}")
+		else:
+			request_refresh = getattr(events_cog, "request_events_refresh", None)
+			if callable(request_refresh):
+				request_refresh()
 		await interaction.followup.send(
-			f"Corrected {configured_a} vs {configured_b} to <t:{int(start_dt.timestamp())}:F>: {event.url}",
+			(
+				f"Corrected {configured_a} vs {configured_b} to <t:{int(start_dt.timestamp())}:F>: {event.url}"
+				+ ("\nAll fixture boards refreshed." if boards_refreshed is True else "")
+				+ (
+					"\nThe event was corrected, but a board refresh failed. Check the bot logs and channel permissions."
+					if boards_refreshed is False
+					else ""
+				)
+			),
 			ephemeral=True,
 		)
 

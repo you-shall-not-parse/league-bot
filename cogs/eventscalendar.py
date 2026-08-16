@@ -11,6 +11,10 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 from data_paths import data_path
+from fixture_store import effective_status as ledger_effective_status
+from fixture_store import fixture_id_for as ledger_fixture_id_for
+from fixture_store import get_fixture as ledger_get_fixture
+from fixture_store import list_fixture_history as ledger_list_fixture_history
 from fixture_store import list_fixture_views
 from fixture_store import mark_event_cancelled as ledger_mark_event_cancelled
 from fixture_store import sync_event as ledger_sync_event
@@ -92,7 +96,14 @@ class EventDisplayCog(commands.Cog):
         self._target_guild_id: Optional[int] = None
         self._update_lock = asyncio.Lock()
         self._debounce_task: Optional[asyncio.Task] = None
+        self._refresh_requested = False
         self._thread_state: Optional[dict] = self._load_thread_state() if ENABLE_EVENT_THREADS else None
+        try:
+            self.bot.add_view(AdminSummaryControlsView())
+            for round_no in sorted(ROUND_WINDOWS):
+                self.bot.add_view(AdminRoundControlsView(round_no))
+        except Exception:
+            logger.warning("Could not register persistent admin fixture controls.", exc_info=True)
         self.update_events_display.start()
         logger.info("EventDisplayCog initialized")
 
@@ -428,15 +439,15 @@ class EventDisplayCog(commands.Cog):
     def _fixture_title(division: str, round_no: int, clan_a: str, clan_b: str) -> str:
         return f"{division} \u2022 Round {round_no}: {clan_a} vs {clan_b}"
 
-    async def _ensure_past_archive_thread(
+    async def _retire_past_archive_thread(
         self,
         guild: discord.Guild,
         board_message: discord.Message,
-    ) -> Optional[discord.Thread]:
+    ) -> None:
+        """Remove the old bot-managed archive thread now that the board is self-contained."""
         candidate_ids = [self.past_archive_thread_id, board_message.id]
-        for thread_id in candidate_ids:
-            if not isinstance(thread_id, int):
-                continue
+        found_thread = False
+        for thread_id in dict.fromkeys(value for value in candidate_ids if isinstance(value, int)):
             thread = guild.get_thread(thread_id)
             if thread is None:
                 try:
@@ -444,97 +455,22 @@ class EventDisplayCog(commands.Cog):
                     thread = fetched if isinstance(fetched, discord.Thread) else None
                 except Exception:
                     thread = None
-            if isinstance(thread, discord.Thread) and not thread.is_private():
-                self.past_archive_thread_id = thread.id
-                return thread
-        try:
-            thread = await board_message.create_thread(
-                name="Past Event Archive",
-                auto_archive_duration=10080,
-            )
-            self.past_archive_thread_id = thread.id
-            self._save_past_display_message_id()
-            return thread
-        except Exception:
-            logger.warning("Could not create the public past-event archive thread.", exc_info=True)
-            return None
-
-    async def _archive_event_message(
-        self,
-        guild: discord.Guild,
-        archive_channel: discord.TextChannel | discord.Thread,
-        event: dict,
-        start: datetime,
-        score_line: str,
-    ) -> Optional[str]:
-        event_key = str(event.get("id") or f"{event.get('name')}:{start.isoformat()}")
-        archive_message: Optional[discord.Message] = None
-        candidate_message_ids = [
-            self.past_archive_message_ids.get(event_key),
-            self.past_archive_message_ids.get(str(event.get("legacy_event_id"))) if event.get("legacy_event_id") else None,
-        ]
-        for message_id in candidate_message_ids:
-            if not isinstance(message_id, int):
+            if not isinstance(thread, discord.Thread):
                 continue
+            found_thread = True
             try:
-                archive_message = await archive_channel.fetch_message(message_id)
-                self.past_archive_message_ids[event_key] = message_id
-                break
+                await thread.delete(reason="Past-events board no longer uses archive threads")
+            except discord.NotFound:
+                pass
             except Exception:
-                archive_message = None
+                logger.warning("Could not remove the old past-event archive thread %s.", thread_id, exc_info=True)
+                return
+        if found_thread or self.past_archive_thread_id is not None or self.past_archive_message_ids:
+            self.past_archive_thread_id = None
+            self.past_archive_message_ids = {}
+            self._save_past_display_message_id()
 
-        description = re.sub(
-            r"^\s*Thread:\s*<#\d+>\s*$",
-            "",
-            str(event.get("description") or ""),
-            flags=re.IGNORECASE | re.MULTILINE,
-        ).strip()
-        detail_embed = discord.Embed(
-            title=self._format_event_title(guild, str(event.get("name") or "Fixture")),
-            description=description or None,
-            color=EMBED_COLOR,
-        )
-        if event.get("missed_window"):
-            detail_embed.add_field(
-                name="Status",
-                value=f"\u26a0\ufe0f Not played during the Round {event.get('round_no')} window",
-                inline=False,
-            )
-            detail_embed.add_field(name="Round window", value=str(event.get("round_window") or "Unknown"), inline=False)
-        elif event.get("event_cancelled"):
-            detail_embed.add_field(
-                name="Status",
-                value="\U0001f534 Discord event cancelled or deleted - admin action required",
-                inline=False,
-            )
-            detail_embed.add_field(name="Round window", value=str(event.get("round_window") or "Unknown"), inline=False)
-        elif event.get("unorganised_current"):
-            detail_embed.add_field(
-                name="Status",
-                value="\U0001f7e0 Not fully organised - no Discord event has been created",
-                inline=False,
-            )
-            detail_embed.add_field(name="Round window", value=str(event.get("round_window") or "Unknown"), inline=False)
-        else:
-            detail_embed.add_field(name="Played", value=f"<t:{int(start.timestamp())}:F>", inline=False)
-        if event.get("location"):
-            detail_embed.add_field(name="Location", value=str(event["location"]), inline=False)
-        detail_embed.add_field(name="Score submission", value=score_line, inline=False)
-        try:
-            if isinstance(archive_channel, discord.Thread) and archive_channel.archived:
-                await archive_channel.edit(archived=False)
-            if archive_message is None:
-                archive_message = await archive_channel.send(embed=detail_embed)
-                self.past_archive_message_ids[event_key] = archive_message.id
-                self._save_past_display_message_id()
-            elif not archive_message.embeds or archive_message.embeds[0].to_dict() != detail_embed.to_dict():
-                await archive_message.edit(embed=detail_embed)
-        except Exception:
-            logger.warning("Could not update archive entry for event %s.", event_key, exc_info=True)
-            return None
-        return f"https://discord.com/channels/{guild.id}/{archive_channel.id}/{archive_message.id}"
-
-    async def _refresh_past_events_board(self, guild: discord.Guild) -> None:
+    async def _refresh_past_events_board(self, guild: discord.Guild) -> bool:
         channel = guild.get_channel(PAST_EVENTS_DISPLAY_CHANNEL_ID)
         if channel is None:
             try:
@@ -543,7 +479,7 @@ class EventDisplayCog(commands.Cog):
                 channel = None
         if not isinstance(channel, discord.TextChannel):
             logger.error("Past-events channel %s is not available", PAST_EVENTS_DISPLAY_CHANNEL_ID)
-            return
+            return False
 
         now = datetime.now(timezone.utc)
         season_start_date = min(start for start, _ in ROUND_WINDOWS.values())
@@ -591,8 +527,6 @@ class EventDisplayCog(commands.Cog):
             )
             self.past_display_message_id = board_message.id
             self._save_past_display_message_id()
-        archive_thread = await self._ensure_past_archive_thread(guild, board_message)
-
         embed = discord.Embed(
             title="Past League Events",
             description=(
@@ -606,7 +540,6 @@ class EventDisplayCog(commands.Cog):
         for fixture in fixtures[:25]:
             status = str(fixture["status"])
             start = self._parse_utc(fixture.get("agreed_datetime_utc"))
-            archive_sort_time = start or self._parse_utc(f"{fixture['window_end']}T23:59:59+00:00") or now
             title_text = self._fixture_title(
                 str(fixture["division"]),
                 int(fixture["round_no"]),
@@ -626,32 +559,16 @@ class EventDisplayCog(commands.Cog):
                     score_line += " · Confirmed"
                 elif status == "disputed":
                     score_line += " · Disputed"
-            event = {
-                "id": fixture["fixture_id"],
-                "legacy_event_id": fixture.get("scheduled_event_id"),
-                "name": title_text,
-                "round_no": fixture["round_no"],
-                "round_window": format_round_window(int(fixture["round_no"])),
-                "missed_window": status == "missed",
-                "unorganised_current": status == "unorganised",
-                "event_cancelled": status == "event_cancelled",
-            }
-            archive_url = await self._archive_event_message(
-                guild,
-                archive_thread or channel,
-                event,
-                archive_sort_time,
-                score_line,
-            )
-            title_line = f"**[{title}]({archive_url})**" if archive_url else f"**{title}**"
+            round_window = format_round_window(int(fixture["round_no"]))
+            title_line = f"**{title}**"
             timing_line = (
-                f"\u26a0\ufe0f Missed window: {event.get('round_window')}"
+                f"\u26a0\ufe0f Missed window: {round_window}"
                 if status == "missed"
                 else (
                     f"\U0001f534 Event cancelled or missing - admin action required"
                     if status == "event_cancelled"
                     else (
-                        f"\U0001f7e0 Not fully organised - current window: {event.get('round_window')}"
+                        f"\U0001f7e0 Not fully organised - current window: {round_window}"
                         if status == "unorganised"
                         else (
                             f"<t:{int(start.timestamp())}:F>"
@@ -668,6 +585,8 @@ class EventDisplayCog(commands.Cog):
             )
         embed.set_footer(text="Last updated")
         await board_message.edit(embed=embed)
+        await self._retire_past_archive_thread(guild, board_message)
+        return True
 
     async def refresh_past_events_board(self, guild: discord.Guild) -> None:
         """Refresh the public past-events board after an external data change."""
@@ -733,11 +652,32 @@ class EventDisplayCog(commands.Cog):
         details.append(f"**Fixture ID:** `{fixture['fixture_id']}`")
         return "\n".join(details)
 
+    def create_admin_fixture_embed(self, guild: discord.Guild, fixture: dict) -> discord.Embed:
+        icon, status_label, _ = self._admin_status(str(fixture["status"]))
+        title = self._format_event_title(
+            guild,
+            self._fixture_title(
+                str(fixture["division"]),
+                int(fixture["round_no"]),
+                str(fixture["clan_a"]),
+                str(fixture["clan_b"]),
+            ),
+        )
+        embed = discord.Embed(
+            title=f"{icon} {title}",
+            description=self._admin_fixture_value(guild, fixture),
+            color=EMBED_COLOR,
+        )
+        embed.set_footer(text=f"{status_label} · Admin controls")
+        return embed
+
     async def _upsert_admin_message(
         self,
         channel: discord.TextChannel,
         message_id: Optional[int],
         embed: discord.Embed,
+        *,
+        view: Optional[discord.ui.View] = None,
     ) -> discord.Message:
         message: Optional[discord.Message] = None
         if isinstance(message_id, int):
@@ -746,9 +686,10 @@ class EventDisplayCog(commands.Cog):
             except Exception:
                 message = None
         if message is None:
-            return await channel.send(embed=embed)
-        if not message.embeds or message.embeds[0].to_dict() != embed.to_dict():
-            await message.edit(embed=embed)
+            return await channel.send(embed=embed, view=view)
+        needs_view = view is not None and not getattr(message, "components", None)
+        if not message.embeds or message.embeds[0].to_dict() != embed.to_dict() or needs_view:
+            await message.edit(embed=embed, view=view)
         return message
 
     async def _retire_stale_admin_board(self, guild: discord.Guild) -> None:
@@ -786,7 +727,7 @@ class EventDisplayCog(commands.Cog):
             else None
         )
 
-    async def _refresh_admin_fixture_board(self, guild: discord.Guild) -> None:
+    async def _refresh_admin_fixture_board(self, guild: discord.Guild) -> bool:
         channel = guild.get_channel(ADMIN_FIXTURE_BOARD_CHANNEL_ID)
         if channel is None:
             try:
@@ -795,7 +736,7 @@ class EventDisplayCog(commands.Cog):
                 channel = None
         if not isinstance(channel, discord.TextChannel):
             logger.error("Admin fixture-board channel %s is not available", ADMIN_FIXTURE_BOARD_CHANNEL_ID)
-            return
+            return False
 
         now = datetime.now(timezone.utc)
         fixtures = list_fixture_views(now=now)
@@ -848,7 +789,12 @@ class EventDisplayCog(commands.Cog):
             inline=False,
         )
         summary.set_footer(text="Automatically refreshed · visibility is controlled by this channel's permissions")
-        summary_message = await self._upsert_admin_message(channel, self.admin_summary_message_id, summary)
+        summary_message = await self._upsert_admin_message(
+            channel,
+            self.admin_summary_message_id,
+            summary,
+            view=AdminSummaryControlsView(),
+        )
         self.admin_summary_message_id = summary_message.id
 
         for round_no in sorted(ROUND_WINDOWS):
@@ -873,14 +819,20 @@ class EventDisplayCog(commands.Cog):
                 channel,
                 self.admin_round_message_ids.get(str(round_no)),
                 round_embed,
+                view=AdminRoundControlsView(round_no),
             )
             self.admin_round_message_ids[str(round_no)] = round_message.id
         await self._retire_stale_admin_board(guild)
         self._save_admin_board_state()
+        return True
 
     def request_events_refresh(self) -> None:
         """Queue a refresh of both the upcoming and past event boards."""
         self._debounced_refresh(delay_seconds=0.5)
+
+    async def refresh_events_now(self, *, reason: str = "external") -> bool:
+        """Run and report an immediate refresh for admin correction workflows."""
+        return await self._update_once(reason=reason)
 
     @app_commands.guilds(discord.Object(id=GUILD_ID))
     @app_commands.guild_only()
@@ -894,8 +846,13 @@ class EventDisplayCog(commands.Cog):
             await interaction.response.send_message("Administrator permission is required.", ephemeral=True)
             return
         await interaction.response.defer(ephemeral=True, thinking=True)
-        await self._update_once(reason=f"admin:{interaction.user.id}")
-        await interaction.followup.send("Fixture control and calendar boards refreshed.", ephemeral=True)
+        refreshed = await self._update_once(reason=f"admin:{interaction.user.id}")
+        await interaction.followup.send(
+            "Fixture control and calendar boards refreshed."
+            if refreshed
+            else "The refresh failed. Check the bot logs and its access to all three board channels.",
+            ephemeral=True,
+        )
 
     def _resolve_custom_emoji(self, guild: discord.Guild, emoji_tag: str) -> str:
         """Resolve a tag like ':name:' to '<:name:id>' if possible."""
@@ -937,22 +894,27 @@ class EventDisplayCog(commands.Cog):
 
         return formatted
 
-    async def _update_once(self, *, reason: str) -> None:
+    async def _update_once(self, *, reason: str) -> bool:
         async with self._update_lock:
             try:
                 channel = self.bot.get_channel(EVENT_DISPLAY_CHANNEL_ID)
+                if channel is None:
+                    try:
+                        channel = await self.bot.fetch_channel(EVENT_DISPLAY_CHANNEL_ID)
+                    except Exception:
+                        channel = None
                 if not channel:
                     logger.error(f"Channel with ID {EVENT_DISPLAY_CHANNEL_ID} not found")
-                    return
+                    return False
 
                 if not isinstance(channel, discord.TextChannel):
                     logger.error(f"Channel {EVENT_DISPLAY_CHANNEL_ID} is not a text channel")
-                    return
+                    return False
 
                 guild = channel.guild
                 if not guild:
                     logger.error("Guild not found for the specified channel")
-                    return
+                    return False
 
                 self._target_guild_id = guild.id
 
@@ -1008,12 +970,14 @@ class EventDisplayCog(commands.Cog):
 
                 # Save all events (not just filtered ones) to JSON
                 await self.save_events_to_json(events)
+                past_refreshed = False
                 try:
-                    await self._refresh_past_events_board(guild)
+                    past_refreshed = await self._refresh_past_events_board(guild)
                 except Exception:
                     logger.warning("Failed to refresh the past-events board.", exc_info=True)
+                admin_refreshed = False
                 try:
-                    await self._refresh_admin_fixture_board(guild)
+                    admin_refreshed = await self._refresh_admin_fixture_board(guild)
                 except Exception:
                     logger.warning("Failed to refresh the admin fixture-control board.", exc_info=True)
 
@@ -1035,7 +999,7 @@ class EventDisplayCog(commands.Cog):
                     try:
                         await message.edit(embed=embed)
                         logger.info(f"Refreshed events display ({reason}) with {len(sorted_events)} events")
-                        return
+                        return past_refreshed and admin_refreshed
                     except discord.Forbidden:
                         logger.warning("No permission to edit the existing events message; will create a new one.")
                     except Exception:
@@ -1046,19 +1010,27 @@ class EventDisplayCog(commands.Cog):
                 self.display_message_id = new_message.id
                 self._save_display_message_id()
                 logger.info(f"Posted new events display ({reason}) with {len(sorted_events)} events")
+                return past_refreshed and admin_refreshed
 
             except Exception as e:
                 logger.error(f"Error updating events display: {e}", exc_info=True)
+                return False
 
     def _debounced_refresh(self, *, delay_seconds: float = 3.0) -> None:
+        self._refresh_requested = True
         if self._debounce_task and not self._debounce_task.done():
-            self._debounce_task.cancel()
+            return
         self._debounce_task = asyncio.create_task(self._debounce_worker(delay_seconds))
 
     async def _debounce_worker(self, delay_seconds: float) -> None:
         try:
             await asyncio.sleep(delay_seconds)
-            await self._update_once(reason="event_change")
+            while True:
+                self._refresh_requested = False
+                await self._update_once(reason="event_change")
+                if not self._refresh_requested:
+                    return
+                await asyncio.sleep(0.5)
         except asyncio.CancelledError:
             return
 
@@ -1091,7 +1063,10 @@ class EventDisplayCog(commands.Cog):
         event_end = scheduled_event.end_time or scheduled_event.start_time
         still_due = event_end is None or event_end.astimezone(timezone.utc) > datetime.now(timezone.utc)
         if status_name in {"cancelled", "canceled"} or still_due:
-            ledger_mark_event_cancelled(scheduled_event.id, actor="discord:delete")
+            fixture_id = ledger_mark_event_cancelled(scheduled_event.id, actor="discord:delete")
+            if fixture_id is not None:
+                await self._update_once(reason=f"event_delete:{scheduled_event.id}")
+                return
         self._debounced_refresh()
 
     @commands.Cog.listener()
@@ -1102,7 +1077,10 @@ class EventDisplayCog(commands.Cog):
         status_name = str(getattr(after.status, "name", after.status)).lower()
         if status_name in {"cancelled", "canceled"}:
             await self.save_events_to_json([after])
-            ledger_mark_event_cancelled(after.id, actor="discord:cancel")
+            fixture_id = ledger_mark_event_cancelled(after.id, actor="discord:cancel")
+            if fixture_id is not None:
+                await self._update_once(reason=f"event_cancel:{after.id}")
+                return
         self._debounced_refresh()
 
     async def save_events_to_json(self, events: list[discord.ScheduledEvent]):
@@ -1208,6 +1186,330 @@ class EventDisplayCog(commands.Cog):
         embed.set_footer(text="Last updated")
         
         return embed
+
+
+def _fixture_view(fixture_id: str) -> Optional[dict]:
+    fixture = ledger_get_fixture(fixture_id)
+    if fixture is None:
+        return None
+    fixture["status"] = ledger_effective_status(fixture)
+    return fixture
+
+
+async def _require_fixture_admin(interaction: discord.Interaction) -> bool:
+    if (
+        interaction.guild is not None
+        and isinstance(interaction.user, discord.Member)
+        and interaction.user.guild_permissions.administrator
+    ):
+        return True
+    message = "Administrator permission is required."
+    if interaction.response.is_done():
+        await interaction.followup.send(message, ephemeral=True)
+    else:
+        await interaction.response.send_message(message, ephemeral=True)
+    return False
+
+
+def _event_display_cog(interaction: discord.Interaction) -> Optional[EventDisplayCog]:
+    get_cog = getattr(interaction.client, "get_cog", None)
+    cog = get_cog("EventDisplayCog") if callable(get_cog) else None
+    return cog if isinstance(cog, EventDisplayCog) else None
+
+
+class AdminSummaryControlsView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="Refresh all boards",
+        emoji="\U0001f504",
+        style=discord.ButtonStyle.primary,
+        custom_id="fixture_admin:refresh_all",
+    )
+    async def refresh_all(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if not await _require_fixture_admin(interaction):
+            return
+        cog = _event_display_cog(interaction)
+        if cog is None:
+            await interaction.response.send_message("Fixture display service is unavailable.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        refreshed = await cog.refresh_events_now(reason=f"admin_button:{interaction.user.id}")
+        await interaction.followup.send(
+            "All fixture boards refreshed."
+            if refreshed
+            else "The refresh failed. Check the bot logs and board-channel permissions.",
+            ephemeral=True,
+        )
+
+
+class AdminManageFixtureButton(discord.ui.Button):
+    def __init__(self, fixture_id: str, clan_a: str, clan_b: str):
+        super().__init__(
+            label=f"Manage {clan_a} vs {clan_b}",
+            style=discord.ButtonStyle.secondary,
+            custom_id=f"fixture_admin:manage:{fixture_id}",
+        )
+        self.fixture_id = fixture_id
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        if not await _require_fixture_admin(interaction):
+            return
+        fixture = _fixture_view(self.fixture_id)
+        cog = _event_display_cog(interaction)
+        if fixture is None or cog is None or interaction.guild is None:
+            await interaction.response.send_message("Fixture control is unavailable.", ephemeral=True)
+            return
+        await interaction.response.send_message(
+            embed=cog.create_admin_fixture_embed(interaction.guild, fixture),
+            view=AdminFixtureActionsView(self.fixture_id),
+            ephemeral=True,
+        )
+
+
+class AdminRoundControlsView(discord.ui.View):
+    def __init__(self, round_no: int):
+        super().__init__(timeout=None)
+        for division, rounds in DIVISION_FIXTURES_BY_ROUND.items():
+            for clan_a, clan_b in rounds.get(round_no, []):
+                self.add_item(
+                    AdminManageFixtureButton(
+                        ledger_fixture_id_for(division, round_no, clan_a, clan_b),
+                        clan_a,
+                        clan_b,
+                    )
+                )
+
+
+class AdminFixtureActionsView(discord.ui.View):
+    def __init__(self, fixture_id: str):
+        super().__init__(timeout=600)
+        self.fixture_id = fixture_id
+        fixture = _fixture_view(fixture_id)
+        self.cancel_event.disabled = fixture is None or fixture.get("status") != "planned"
+        self.edit_score.disabled = fixture is None or not fixture.get("score_match_id")
+
+    @discord.ui.button(label="Edit date/event", emoji="\U0001f4c5", style=discord.ButtonStyle.primary)
+    async def edit_event(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if not await _require_fixture_admin(interaction):
+            return
+        fixture = _fixture_view(self.fixture_id)
+        if fixture is None:
+            await interaction.response.send_message("Fixture not found.", ephemeral=True)
+            return
+        await interaction.response.send_modal(AdminFixtureEventModal(fixture))
+
+    @discord.ui.button(label="Cancel event", emoji="\u26d4", style=discord.ButtonStyle.danger)
+    async def cancel_event(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if not await _require_fixture_admin(interaction):
+            return
+        fixture = _fixture_view(self.fixture_id)
+        if fixture is None or fixture.get("status") != "planned":
+            await interaction.response.send_message("This fixture has no live planned event to cancel.", ephemeral=True)
+            return
+        await interaction.response.send_message(
+            f"Cancel the Discord event for **{fixture['clan_a']} vs {fixture['clan_b']}**? "
+            "The fixture record and history will be retained.",
+            view=AdminCancelConfirmationView(self.fixture_id),
+            ephemeral=True,
+        )
+
+    @discord.ui.button(label="Edit score", emoji="\U0001f4dd", style=discord.ButtonStyle.secondary)
+    async def edit_score(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if not await _require_fixture_admin(interaction):
+            return
+        fixture = _fixture_view(self.fixture_id)
+        get_cog = getattr(interaction.client, "get_cog", None)
+        scoreboard = get_cog("ScoreboardCog") if callable(get_cog) else None
+        if fixture is None or scoreboard is None or not fixture.get("score_match_id"):
+            await interaction.response.send_message("No submitted score is available to edit.", ephemeral=True)
+            return
+        match = await scoreboard.store.get_match(str(fixture["score_match_id"]))
+        if match is None:
+            await interaction.response.send_message("The scoreboard match record was not found.", ephemeral=True)
+            return
+        role_names = {int(role_id): clan for clan, role_id in CLAN_ROLE_IDS.items()}
+        submitter = role_names.get(int(match.submitter_clan_role_id), "Submitter")
+        opponent = role_names.get(int(match.opponent_clan_role_id), "Opponent")
+        await interaction.response.send_modal(
+            AdminFixtureScoreModal(
+                self.fixture_id,
+                str(match.match_id),
+                submitter,
+                opponent,
+                int(match.submitter_score),
+                int(match.opponent_score),
+            )
+        )
+
+    @discord.ui.button(label="View history", emoji="\U0001f4dc", style=discord.ButtonStyle.secondary)
+    async def view_history(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if not await _require_fixture_admin(interaction):
+            return
+        fixture = _fixture_view(self.fixture_id)
+        if fixture is None:
+            await interaction.response.send_message("Fixture not found.", ephemeral=True)
+            return
+        history = ledger_list_fixture_history(self.fixture_id, limit=20)
+        lines: list[str] = []
+        for entry in history:
+            created = EventDisplayCog._parse_utc(entry.get("created_at"))
+            when = f"<t:{int(created.timestamp())}:f>" if created is not None else "Unknown time"
+            action = str(entry.get("action") or "updated").replace("_", " ").title()
+            actor = str(entry.get("actor") or "System")
+            lines.append(f"• {when} — **{action}** · {actor}")
+        embed = discord.Embed(
+            title=f"Fixture history · {fixture['clan_a']} vs {fixture['clan_b']}",
+            description="\n".join(lines) if lines else "No recorded changes yet.",
+            color=EMBED_COLOR,
+        )
+        embed.set_footer(text=self.fixture_id)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @discord.ui.button(label="Refresh boards", emoji="\U0001f504", style=discord.ButtonStyle.secondary)
+    async def refresh_boards(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if not await _require_fixture_admin(interaction):
+            return
+        cog = _event_display_cog(interaction)
+        if cog is None:
+            await interaction.response.send_message("Fixture display service is unavailable.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        refreshed = await cog.refresh_events_now(reason=f"fixture_manage:{self.fixture_id}:{interaction.user.id}")
+        await interaction.followup.send(
+            "All fixture boards refreshed."
+            if refreshed
+            else "The refresh failed. Check the bot logs and board-channel permissions.",
+            ephemeral=True,
+        )
+
+
+class AdminFixtureEventModal(discord.ui.Modal):
+    def __init__(self, fixture: dict):
+        super().__init__(title="Edit fixture date/event")
+        self.fixture_id = str(fixture["fixture_id"])
+        agreed = EventDisplayCog._parse_utc(fixture.get("agreed_datetime_utc"))
+        self.date_field = discord.ui.TextInput(
+            label="Date (DD/MM/YYYY)",
+            default=agreed.strftime("%d/%m/%Y") if agreed is not None else None,
+            max_length=10,
+        )
+        self.time_field = discord.ui.TextInput(
+            label="UTC time (HH:MM)",
+            default=agreed.strftime("%H:%M") if agreed is not None else None,
+            max_length=5,
+        )
+        self.add_item(self.date_field)
+        self.add_item(self.time_field)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        if not await _require_fixture_admin(interaction):
+            return
+        fixture = _fixture_view(self.fixture_id)
+        get_cog = getattr(interaction.client, "get_cog", None)
+        organiser = get_cog("EventOrganiser") if callable(get_cog) else None
+        command = getattr(type(organiser), "correct_fixture_event", None) if organiser is not None else None
+        if fixture is None or not isinstance(command, app_commands.Command):
+            await interaction.response.send_message("Fixture organiser service is unavailable.", ephemeral=True)
+            return
+        await command.callback(
+            organiser,
+            interaction,
+            int(fixture["round_no"]),
+            app_commands.Choice(name=str(fixture["clan_a"]), value=str(fixture["clan_a"])),
+            app_commands.Choice(name=str(fixture["clan_b"]), value=str(fixture["clan_b"])),
+            str(self.date_field.value),
+            str(self.time_field.value),
+        )
+
+
+class AdminFixtureScoreModal(discord.ui.Modal):
+    def __init__(
+        self,
+        fixture_id: str,
+        match_id: str,
+        submitter: str,
+        opponent: str,
+        submitter_score: int,
+        opponent_score: int,
+    ):
+        super().__init__(title="Edit submitted score")
+        self.fixture_id = fixture_id
+        self.match_id = match_id
+        self.score_field = discord.ui.TextInput(
+            label=f"{submitter} vs {opponent}",
+            placeholder="3-2",
+            default=f"{submitter_score}-{opponent_score}",
+            max_length=5,
+        )
+        self.add_item(self.score_field)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        if not await _require_fixture_admin(interaction):
+            return
+        get_cog = getattr(interaction.client, "get_cog", None)
+        scoreboard = get_cog("ScoreboardCog") if callable(get_cog) else None
+        command = getattr(type(scoreboard), "scoreboard_admin_edit_match", None) if scoreboard is not None else None
+        if not isinstance(command, app_commands.Command):
+            await interaction.response.send_message("Scoreboard service is unavailable.", ephemeral=True)
+            return
+        await command.callback(scoreboard, interaction, self.match_id, str(self.score_field.value))
+
+
+class AdminCancelConfirmationView(discord.ui.View):
+    def __init__(self, fixture_id: str):
+        super().__init__(timeout=120)
+        self.fixture_id = fixture_id
+
+    @discord.ui.button(label="Confirm cancellation", style=discord.ButtonStyle.danger)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if not await _require_fixture_admin(interaction):
+            return
+        fixture = _fixture_view(self.fixture_id)
+        if fixture is None or interaction.guild is None or not fixture.get("scheduled_event_id"):
+            await interaction.response.send_message("The planned Discord event was not found.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        event_id = int(fixture["scheduled_event_id"])
+        try:
+            event = await interaction.guild.fetch_scheduled_event(event_id)
+            status_name = str(getattr(event.status, "name", event.status)).lower()
+            if status_name not in {"cancelled", "canceled"}:
+                await event.cancel(reason=f"Cancelled from fixture admin board by {interaction.user}")
+        except discord.NotFound:
+            pass
+        except Exception:
+            logger.warning("Admin board could not cancel scheduled event %s.", event_id, exc_info=True)
+            await interaction.followup.send(
+                "Discord would not cancel the event. The fixture record was left unchanged.",
+                ephemeral=True,
+            )
+            return
+        ledger_mark_event_cancelled(event_id, actor=f"admin_button:{interaction.user.id}")
+        cog = _event_display_cog(interaction)
+        refreshed = await cog.refresh_events_now(reason=f"fixture_cancel:{event_id}") if cog is not None else False
+        await interaction.followup.send(
+            "Event cancelled; the fixture record and history were retained."
+            + (" All boards refreshed." if refreshed else " A board refresh failed; check the bot logs."),
+            ephemeral=True,
+        )
+
+    @discord.ui.button(label="Go back", style=discord.ButtonStyle.secondary)
+    async def go_back(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if not await _require_fixture_admin(interaction):
+            return
+        fixture = _fixture_view(self.fixture_id)
+        cog = _event_display_cog(interaction)
+        if fixture is None or cog is None or interaction.guild is None:
+            await interaction.response.send_message("Fixture control is unavailable.", ephemeral=True)
+            return
+        await interaction.response.edit_message(
+            content=None,
+            embed=cog.create_admin_fixture_embed(interaction.guild, fixture),
+            view=AdminFixtureActionsView(self.fixture_id),
+        )
+
 
 async def setup(bot: commands.Bot):
     """Load the cog."""
