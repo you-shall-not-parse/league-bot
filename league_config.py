@@ -22,9 +22,31 @@ CLAN_ROLE_IDS: dict[str, int] = {
     "7DR": 1462383332598743080,
     "7PD": 1464763568506536000,
     "PG60": 1464763651108896778,
-    "48th": 1462558355166986261,
+    "ZSR48th": 1462558355166986261,
     "ZFG": 1476529643128356925,
 }
+
+# Historical names that should resolve to the current clan identity. These keep
+# persisted fixtures and in-progress organiser threads working across renames.
+CLAN_NAME_ALIASES: dict[str, str] = {
+    "48th": "ZSR48th",
+}
+
+
+def canonical_clan_name(name: str) -> str:
+    """Return the active display name for a current or historical clan name."""
+
+    return CLAN_NAME_ALIASES.get(name, name)
+
+
+def fixture_identity_name(name: str) -> str:
+    """Return the stable name used in fixture IDs across clan renames."""
+
+    canonical_name = canonical_clan_name(name)
+    for historical_name, active_name in CLAN_NAME_ALIASES.items():
+        if active_name == canonical_name:
+            return historical_name
+    return canonical_name
 
 
 # =============================
@@ -39,7 +61,8 @@ KEYWORD_EMOJI_TAGS: dict[str, str] = {
     "KRTS": ":KRTS:",
     "7DR": ":7DR:",
     "7PD": ":7PD:",
-    "48th": ":48th:",
+    "ZSR48th": ":48th:",
+    "48th": ":48th:",  # Historical event titles
     "PG60": ":flag_de:",
     "RMC": ":RMC:",
     "7CIE": ":7CIE:",
@@ -78,7 +101,7 @@ EMBED_COLOR: int = 0x5865F2
 # Divisions for the active season.
 DIVISION_CLANS: dict[str, list[str]] = {
     "Allied Division": ["OFIN", "HG", "KRTS", "7DR", "RMC"],
-    "Axis Division": ["48th", "7PD", "ZFG", "PG60", "7CIE"],
+    "Axis Division": ["ZSR48th", "7PD", "ZFG", "PG60", "7CIE"],
 }
 
 # Display order for schedule-like surfaces.
@@ -129,10 +152,10 @@ DIVISION_FIXTURES_BY_ROUND: dict[str, dict[int, list[tuple[str, str]]]] = {
         5: [("HG", "KRTS"), ("7DR", "RMC")],
     },
     "Axis Division": {
-        1: [("48th", "7PD"), ("ZFG", "PG60")],
-        2: [("ZFG", "48th"), ("7PD", "7CIE")],
-        3: [("PG60", "48th"), ("ZFG", "7CIE")],
-        4: [("7CIE", "48th"), ("7PD", "PG60")],
+        1: [("ZSR48th", "7PD"), ("ZFG", "PG60")],
+        2: [("ZFG", "ZSR48th"), ("7PD", "7CIE")],
+        3: [("PG60", "ZSR48th"), ("ZFG", "7CIE")],
+        4: [("7CIE", "ZSR48th"), ("7PD", "PG60")],
         5: [("7PD", "ZFG"), ("PG60", "7CIE")],
     },
 }

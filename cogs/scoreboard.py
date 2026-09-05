@@ -16,7 +16,7 @@ from fixture_store import clear_scores_for_division as ledger_clear_scores_for_d
 from fixture_store import fixture_for_roles as ledger_fixture_for_roles
 from fixture_store import record_score as ledger_record_score
 from fixture_store import update_score_status as ledger_update_score_status
-from league_config import CLAN_ROLE_IDS, DIVISION_CLANS
+from league_config import CLAN_ROLE_IDS, DIVISION_CLANS, canonical_clan_name
 
 
 # -----------------------------
@@ -347,6 +347,8 @@ class ScoreboardStore:
 				self.data["last_results"] = last_results
 			legacy_result = self.data.get("last_result")
 			if isinstance(legacy_result, dict):
+				legacy_result["a_name"] = canonical_clan_name(str(legacy_result.get("a_name") or ""))
+				legacy_result["b_name"] = canonical_clan_name(str(legacy_result.get("b_name") or ""))
 				legacy_division = _division_for_clan_name(str(legacy_result.get("a_name") or ""))
 				if legacy_division:
 					last_results.setdefault(legacy_division, legacy_result)
@@ -397,8 +399,10 @@ class ScoreboardStore:
 				if not isinstance(last, dict):
 					last_results.pop(division, None)
 					continue
-				a_name = str(last.get("a_name") or "")
-				b_name = str(last.get("b_name") or "")
+				a_name = canonical_clan_name(str(last.get("a_name") or ""))
+				b_name = canonical_clan_name(str(last.get("b_name") or ""))
+				last["a_name"] = a_name
+				last["b_name"] = b_name
 				if a_name not in allowed_names or b_name not in allowed_names:
 					last_results.pop(division, None)
 

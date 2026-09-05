@@ -7,7 +7,7 @@ Current filenames:
   KRTS.png
   7DR.png
   RMC.png
-  48th.png
+  ZSR48th.png
   7PD.png
   ZFG.png
   PG60.png
@@ -16,3 +16,5 @@ Current filenames:
 PNG, JPG, JPEG, and WEBP files are supported. Transparent square PNG images
 are recommended. Missing or unreadable logos are skipped without preventing
 the leaderboard from rendering.
+
+48th.png is retained as the legacy pre-coalition logo but is no longer used.

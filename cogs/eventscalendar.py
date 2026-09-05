@@ -27,9 +27,11 @@ from league_config import (
     KEYWORD_EMOJI_TAGS,
     MAX_EVENTS_TO_DISPLAY,
     PAST_EVENTS_DISPLAY_CHANNEL_ID,
+    CLAN_NAME_ALIASES,
     CLAN_ROLE_IDS,
     DIVISION_FIXTURES_BY_ROUND,
     ROUND_WINDOWS,
+    canonical_clan_name,
     format_round_window,
     UPDATE_INTERVAL_MINUTES,
 )
@@ -416,9 +418,12 @@ class EventDisplayCog(commands.Cog):
         if not re.search(r"\bvs\b", event_name, flags=re.IGNORECASE):
             return None
         found: list[str] = []
-        for clan in sorted(CLAN_ROLE_IDS, key=len, reverse=True):
+        searchable_names = [*CLAN_ROLE_IDS, *CLAN_NAME_ALIASES]
+        for clan in sorted(searchable_names, key=len, reverse=True):
             if re.search(rf"(?<!\w){re.escape(clan)}(?!\w)", event_name, flags=re.IGNORECASE):
-                found.append(clan)
+                canonical_name = canonical_clan_name(clan)
+                if canonical_name not in found:
+                    found.append(canonical_name)
         if len(found) != 2:
             return None
         return found[0], found[1]

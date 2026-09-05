@@ -16,7 +16,14 @@ from datetime import datetime, time, timedelta, timezone
 from typing import Any, Iterator, Optional
 
 from data_paths import data_path
-from league_config import CLAN_ROLE_IDS, DIVISION_FIXTURES_BY_ROUND, ROUND_WINDOWS
+from league_config import (
+    CLAN_NAME_ALIASES,
+    CLAN_ROLE_IDS,
+    DIVISION_FIXTURES_BY_ROUND,
+    ROUND_WINDOWS,
+    canonical_clan_name,
+    fixture_identity_name,
+)
 
 
 DB_PATH = data_path("league.db")
@@ -51,11 +58,16 @@ def _slug(value: str) -> str:
 
 def fixture_id_for(division: str, round_no: int, clan_a: str, clan_b: str) -> str:
     season_year = min(start for start, _ in ROUND_WINDOWS.values()).year
-    return f"{season_year}-{_slug(division)}-r{round_no}-{_slug(clan_a)}-{_slug(clan_b)}"
+    # Clan display names can change mid-season. Keep the original identity in
+    # the durable key so an upsert updates the existing fixture rather than
+    # creating a duplicate and losing its event/score links.
+    identity_a = fixture_identity_name(clan_a)
+    identity_b = fixture_identity_name(clan_b)
+    return f"{season_year}-{_slug(division)}-r{round_no}-{_slug(identity_a)}-{_slug(identity_b)}"
 
 
 def _configured_fixture(round_no: int, clan_a: str, clan_b: str) -> Optional[tuple[str, str, str]]:
-    target = {clan_a, clan_b}
+    target = {canonical_clan_name(clan_a), canonical_clan_name(clan_b)}
     for division, rounds in DIVISION_FIXTURES_BY_ROUND.items():
         for configured_a, configured_b in rounds.get(round_no, []):
             if {configured_a, configured_b} == target:
@@ -558,10 +570,13 @@ def migrate_legacy_data() -> None:
     for event in events:
         name = str(event.get("name") or "")
         round_match = re.search(r"\bRound\s+(\d+)\s*:", name, flags=re.IGNORECASE)
-        clans = [
-            clan for clan in CLAN_ROLE_IDS
-            if re.search(rf"(?<!\w){re.escape(clan)}(?!\w)", name, flags=re.IGNORECASE)
-        ]
+        clans: list[str] = []
+        searchable_names = [*CLAN_ROLE_IDS, *CLAN_NAME_ALIASES]
+        for clan in sorted(searchable_names, key=len, reverse=True):
+            if re.search(rf"(?<!\w){re.escape(clan)}(?!\w)", name, flags=re.IGNORECASE):
+                canonical_name = canonical_clan_name(clan)
+                if canonical_name not in clans:
+                    clans.append(canonical_name)
         if round_match is None or len(clans) != 2:
             continue
         fixture = find_fixture(int(round_match.group(1)), clans[0], clans[1])
