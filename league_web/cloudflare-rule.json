@@ -1,0 +1,6 @@
+{
+  "description": "League website entry challenge",
+  "expression": "(http.host eq \"league.example.com\")",
+  "action": "managed_challenge",
+  "enabled": true
+}

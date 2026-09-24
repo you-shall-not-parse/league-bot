@@ -1,5 +1,10 @@
 # League bot
 
+The public league website provides division standings, results, fixtures/calendar
+and a rulebook without login. Run `python -m league_web.server` and open
+http://127.0.0.1:7030. See [website setup and Cloudflare entry protection](league_web/README.md)
+before publishing it.
+
 The bot tracks every configured league match in a durable SQLite fixture ledger at
 `data/league.db`. Discord scheduled events, the upcoming calendar, the past-events
 board, organiser threads, and submitted scores are views of that same fixture row.
