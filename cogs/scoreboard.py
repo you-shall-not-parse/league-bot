@@ -6,6 +6,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Optional
+from urllib.parse import urlsplit
 
 import discord
 from discord import app_commands
@@ -16,7 +17,7 @@ from fixture_store import clear_scores_for_division as ledger_clear_scores_for_d
 from fixture_store import fixture_for_roles as ledger_fixture_for_roles
 from fixture_store import record_score as ledger_record_score
 from fixture_store import update_score_status as ledger_update_score_status
-from league_config import CLAN_ROLE_IDS, DIVISION_CLANS, canonical_clan_name
+from league_config import CLAN_ROLE_IDS, DIVISION_CLANS, TEST_CLAN_NAME, TEST_CLAN_ROLE_ID, canonical_clan_name
 
 
 # -----------------------------
@@ -34,6 +35,7 @@ SCOREBOARD_CHANNEL_ID: int = 1462387812815998997
 
 # Channel where results are posted for confirmation by the opposing clan
 VALIDATION_CHANNEL_ID: int = 1462382488784470181
+ADMIN_RESULTS_CHANNEL_ID: int = 1462544766775595123
 
 # Both independent division tables are displayed together in this channel.
 LEADERBOARD_CHANNEL_ID: int = 1462384116376014911
@@ -91,6 +93,35 @@ def _parse_score(text: str) -> tuple[int, int]:
 	return a, b
 
 
+def _validate_stats_link(value: str) -> str:
+	link = value.strip()
+	try:
+		parsed = urlsplit(link)
+		valid = (
+			0 < len(link) <= 1000
+			and parsed.scheme in ("http", "https")
+			and bool(parsed.hostname)
+			and parsed.username is None and parsed.password is None
+			and not any(c.isspace() or ord(c) < 32 or c in "<>" for c in link)
+		)
+		parsed.port  # Reject malformed ports too.
+	except ValueError:
+		valid = False
+	if not valid:
+		raise ValueError("Enter a full http:// or https:// Bifrost or CRCON match stats link (up to 1,000 characters).")
+	# CRCON is self-hosted, so there is no fixed hostname allowlist.
+	return link
+
+
+def _set_stats_field(embed: discord.Embed, link: Optional[str]) -> None:
+	value = link or "Not provided"
+	for index, field in enumerate(embed.fields):
+		if field.name == "Match stats":
+			embed.set_field_at(index, name="Match stats", value=value, inline=False)
+			return
+	embed.add_field(name="Match stats", value=value, inline=False)
+
+
 def _score_options() -> list[tuple[int, int]]:
 	# From the submitter clan's perspective
 	return [(5, 0), (4, 1), (3, 2), (2, 3), (1, 4), (0, 5)]
@@ -111,6 +142,8 @@ def _admin_app_command_check(interaction: discord.Interaction) -> bool:
 
 
 def _role_name_from_id(role_id: int) -> str:
+	if role_id == TEST_CLAN_ROLE_ID:
+		return TEST_CLAN_NAME
 	for name, rid in CLAN_ROLES.items():
 		if rid == role_id:
 			return name
@@ -253,6 +286,8 @@ class PendingMatch:
 	status: str = "pending"  # pending | confirmed | disputed
 	confirmed_by_id: Optional[int] = None
 	confirmed_at: Optional[str] = None
+	stats_link: Optional[str] = None
+	admin_message_id: Optional[int] = None
 
 	def to_dict(self) -> dict[str, Any]:
 		return {
@@ -268,6 +303,8 @@ class PendingMatch:
 			"status": self.status,
 			"confirmed_by_id": self.confirmed_by_id,
 			"confirmed_at": self.confirmed_at,
+			"stats_link": self.stats_link,
+			"admin_message_id": self.admin_message_id,
 		}
 
 	@staticmethod
@@ -285,6 +322,8 @@ class PendingMatch:
 			status=str(d.get("status") or "pending"),
 			confirmed_by_id=_safe_int(d.get("confirmed_by_id")),
 			confirmed_at=d.get("confirmed_at"),
+			stats_link=d.get("stats_link"),
+			admin_message_id=_safe_int(d.get("admin_message_id")),
 		)
 
 
@@ -314,7 +353,7 @@ class ScoreboardStore:
 			self.data.setdefault("pending_by_validation_message", {})  # message_id(str) -> match_id
 			pending_matches = self.data["pending_matches"]
 			for raw_match in pending_matches.values() if isinstance(pending_matches, dict) else []:
-				if not isinstance(raw_match, dict) or raw_match.get("fixture_id"):
+				if not isinstance(raw_match, dict) or raw_match.get("fixture_id") or raw_match.get("opponent_clan_role_id") == TEST_CLAN_ROLE_ID:
 					continue
 				try:
 					fixture = ledger_fixture_for_roles(
@@ -425,6 +464,16 @@ class ScoreboardStore:
 			self.data["pending_by_validation_message"][str(validation_message_id)] = match_id
 		await self.save()
 
+	async def update_match_metadata(self, match_id: str, **fields: Any) -> Optional[PendingMatch]:
+		async with self._lock:
+			raw = self.data.get("pending_matches", {}).get(match_id)
+			if raw is None:
+				return None
+			raw.update(fields)
+			match = PendingMatch.from_dict(raw)
+		await self.save()
+		return match
+
 	async def get_match(self, match_id: str) -> Optional[PendingMatch]:
 		async with self._lock:
 			d = self.data.get("pending_matches", {}).get(match_id)
@@ -461,64 +510,65 @@ class ScoreboardStore:
 			d["confirmed_at"] = _utcnow_iso()
 			match = PendingMatch.from_dict(d)
 
-			# Apply to leaderboard
-			stats: dict[str, Any] = self.data.setdefault("clan_stats", {})
+			if match.opponent_clan_role_id != TEST_CLAN_ROLE_ID:
+				# Apply to leaderboard
+				stats: dict[str, Any] = self.data.setdefault("clan_stats", {})
 
-			a_key = str(match.submitter_clan_role_id)
-			b_key = str(match.opponent_clan_role_id)
-			if a_key not in stats:
-				stats[a_key] = {
-					"name": _role_name_from_id(match.submitter_clan_role_id),
-					"w": 0,
-					"l": 0,
-					"played": 0,
-					"maps_for": 0,
-					"maps_against": 0,
+				a_key = str(match.submitter_clan_role_id)
+				b_key = str(match.opponent_clan_role_id)
+				if a_key not in stats:
+					stats[a_key] = {
+						"name": _role_name_from_id(match.submitter_clan_role_id),
+						"w": 0,
+						"l": 0,
+						"played": 0,
+						"maps_for": 0,
+						"maps_against": 0,
+					}
+				if b_key not in stats:
+					stats[b_key] = {
+						"name": _role_name_from_id(match.opponent_clan_role_id),
+						"w": 0,
+						"l": 0,
+						"played": 0,
+						"maps_for": 0,
+						"maps_against": 0,
+					}
+
+				a = stats[a_key]
+				b = stats[b_key]
+
+				a["played"] = int(a.get("played", 0)) + 1
+				b["played"] = int(b.get("played", 0)) + 1
+
+				a["maps_for"] = int(a.get("maps_for", 0)) + match.submitter_score
+				a["maps_against"] = int(a.get("maps_against", 0)) + match.opponent_score
+				b["maps_for"] = int(b.get("maps_for", 0)) + match.opponent_score
+				b["maps_against"] = int(b.get("maps_against", 0)) + match.submitter_score
+
+				if match.submitter_score > match.opponent_score:
+					a["w"] = int(a.get("w", 0)) + 1
+					b["l"] = int(b.get("l", 0)) + 1
+				else:
+					b["w"] = int(b.get("w", 0)) + 1
+					a["l"] = int(a.get("l", 0)) + 1
+
+				self.data["clan_stats"] = stats
+				result = {
+					"match_id": match.match_id,
+					"a_name": _role_name_from_id(match.submitter_clan_role_id),
+					"b_name": _role_name_from_id(match.opponent_clan_role_id),
+					"a_score": match.submitter_score,
+					"b_score": match.opponent_score,
+					"at": _utcnow_iso(),
 				}
-			if b_key not in stats:
-				stats[b_key] = {
-					"name": _role_name_from_id(match.opponent_clan_role_id),
-					"w": 0,
-					"l": 0,
-					"played": 0,
-					"maps_for": 0,
-					"maps_against": 0,
-				}
-
-			a = stats[a_key]
-			b = stats[b_key]
-
-			a["played"] = int(a.get("played", 0)) + 1
-			b["played"] = int(b.get("played", 0)) + 1
-
-			a["maps_for"] = int(a.get("maps_for", 0)) + match.submitter_score
-			a["maps_against"] = int(a.get("maps_against", 0)) + match.opponent_score
-			b["maps_for"] = int(b.get("maps_for", 0)) + match.opponent_score
-			b["maps_against"] = int(b.get("maps_against", 0)) + match.submitter_score
-
-			if match.submitter_score > match.opponent_score:
-				a["w"] = int(a.get("w", 0)) + 1
-				b["l"] = int(b.get("l", 0)) + 1
-			else:
-				b["w"] = int(b.get("w", 0)) + 1
-				a["l"] = int(a.get("l", 0)) + 1
-
-			self.data["clan_stats"] = stats
-			result = {
-				"match_id": match.match_id,
-				"a_name": _role_name_from_id(match.submitter_clan_role_id),
-				"b_name": _role_name_from_id(match.opponent_clan_role_id),
-				"a_score": match.submitter_score,
-				"b_score": match.opponent_score,
-				"at": _utcnow_iso(),
-			}
-			division = _division_for_role_id(match.submitter_clan_role_id)
-			if division:
-				self.data.setdefault("last_results", {})[division] = result
-			self.data["last_result"] = result
-
+				division = _division_for_role_id(match.submitter_clan_role_id)
+				if division:
+					self.data.setdefault("last_results", {})[division] = result
+				self.data["last_result"] = result
 		await self.save()
-		ledger_update_score_status(match_id, "confirmed", confirmed_at=match.confirmed_at)
+		if match.opponent_clan_role_id != TEST_CLAN_ROLE_ID:
+			ledger_update_score_status(match_id, "confirmed", confirmed_at=match.confirmed_at)
 		return match
 
 
@@ -541,6 +591,9 @@ class OpponentSelect(discord.ui.Select):
 			if allowed_clans and clan_name not in allowed_clans:
 				continue
 			options.append(discord.SelectOption(label=clan_name, value=str(role_id)))
+		options.append(discord.SelectOption(label="Test Clan (@admin)", value=str(TEST_CLAN_ROLE_ID)))
+		if submitter_clan_role_id == TEST_CLAN_ROLE_ID:
+			options = options[-1:]
 		super().__init__(
 			placeholder="Select the opposing clan…",
 			min_values=1,
@@ -656,6 +709,33 @@ class SubmitFlowView(discord.ui.View):
 			await interaction.response.send_message("Pick an opposing clan and a score first.", ephemeral=True)
 			return
 
+		await interaction.response.send_modal(MatchStatsModal(self))
+
+
+class MatchStatsModal(discord.ui.Modal, title="Match stats"):
+	stats_link = discord.ui.TextInput(
+		label="Bifrost or CRCON match stats link",
+		placeholder="https://your-stats-server/match/...",
+		required=True,
+		max_length=1000,
+	)
+
+	def __init__(self, flow: "SubmitFlowView"):
+		super().__init__(timeout=300)
+		self.submitter_id = flow.submitter_id
+		self.submitter_clan_role_id = flow.submitter_clan_role_id
+		self.opponent_clan_role_id = flow.opponent_clan_role_id
+		self.selected_score = flow.selected_score
+
+	async def on_submit(self, interaction: discord.Interaction):
+		if not interaction.guild or not isinstance(interaction.user, discord.Member) or interaction.user.id != self.submitter_id:
+			await interaction.response.send_message("This submission is not available to you.", ephemeral=True)
+			return
+		try:
+			stats_link = _validate_stats_link(str(self.stats_link.value))
+		except ValueError as exc:
+			await interaction.response.send_message(str(exc), ephemeral=True)
+			return
 		try:
 			a, b = _parse_score(self.selected_score)
 		except ValueError as e:
@@ -670,7 +750,7 @@ class SubmitFlowView(discord.ui.View):
 
 		match_id = uuid.uuid4().hex[:12]
 		created_at = _utcnow_iso()
-		fixture = ledger_fixture_for_roles(
+		fixture = {"fixture_id": None} if self.opponent_clan_role_id == TEST_CLAN_ROLE_ID else ledger_fixture_for_roles(
 			self.submitter_clan_role_id,
 			self.opponent_clan_role_id,
 			submitted_at=created_at,
@@ -695,7 +775,8 @@ class SubmitFlowView(discord.ui.View):
 			submitter_score=a,
 			opponent_score=b,
 			created_at=created_at,
-			fixture_id=str(fixture["fixture_id"]),
+			fixture_id=str(fixture["fixture_id"]) if fixture["fixture_id"] else None,
+			stats_link=stats_link,
 		)
 
 		log.info(
@@ -709,19 +790,25 @@ class SubmitFlowView(discord.ui.View):
 		)
 
 		await cog.store.add_pending_match(match)
-		ledger_record_score(
-			match.fixture_id,
-			match_id=match.match_id,
-			submitter_role_id=match.submitter_clan_role_id,
-			submitter_score=match.submitter_score,
-			opponent_score=match.opponent_score,
-			submitted_at=match.created_at,
-		)
+		if match.fixture_id:
+			ledger_record_score(
+				match.fixture_id,
+				match_id=match.match_id,
+				submitter_role_id=match.submitter_clan_role_id,
+				submitter_score=match.submitter_score,
+				opponent_score=match.opponent_score,
+				submitted_at=match.created_at,
+			)
 		events_cog = interaction.client.get_cog("EventDisplayCog")
 		request_refresh = getattr(events_cog, "request_events_refresh", None)
 		if callable(request_refresh):
 			request_refresh()
-		validation_message = await cog.post_validation_message(interaction.guild, match)
+		admin_posted = await cog.post_admin_result(interaction.guild, match)
+		try:
+			validation_message = await cog.post_validation_message(interaction.guild, match)
+		except discord.HTTPException:
+			log.exception("Failed posting validation for %s", match.match_id)
+			validation_message = None
 		if validation_message:
 			await cog.store.link_validation_message(match.match_id, validation_message.id)
 			log.info(
@@ -733,7 +820,10 @@ class SubmitFlowView(discord.ui.View):
 		else:
 			log.warning("Validation NOT posted match_id=%s", match_id)
 
-		await interaction.followup.send("Submitted! A validation message has been posted.", ephemeral=True)
+		notice = "Submitted!"
+		notice += " A validation message has been posted." if validation_message else " The result was saved, but the validation message could not be posted; contact an admin."
+		notice += " Admin confirmation posted." if admin_posted else " Admin confirmation could not be posted; contact an admin."
+		await interaction.followup.send(notice, ephemeral=True)
 
 
 class ScoreboardMainView(discord.ui.View):
@@ -750,6 +840,8 @@ class ScoreboardMainView(discord.ui.View):
 			await interaction.response.send_message("Use this in a server.", ephemeral=True)
 			return
 		clan_role_id = _member_clan_role_id(interaction.user)
+		if clan_role_id is None and _is_admin_member(interaction.user):
+			clan_role_id = TEST_CLAN_ROLE_ID
 		if clan_role_id is None:
 			await interaction.response.send_message(
 				"You must have exactly one clan role to submit scores.",
@@ -762,7 +854,7 @@ class ScoreboardMainView(discord.ui.View):
 				ephemeral=True,
 			)
 			return
-		division = _division_for_role_id(clan_role_id)
+		division = "Test fixtures" if clan_role_id == TEST_CLAN_ROLE_ID else _division_for_role_id(clan_role_id)
 		if not division:
 			await interaction.response.send_message("Your clan is not assigned to an active division.", ephemeral=True)
 			return
@@ -1317,6 +1409,68 @@ class ScoreboardCog(commands.Cog):
 		base.save(out_path, format="PNG")
 		return out_path
 
+	async def post_admin_result(self, guild: discord.Guild, match: PendingMatch) -> bool:
+		embed = discord.Embed(
+			title="Test result submission received" if match.opponent_clan_role_id == TEST_CLAN_ROLE_ID else "Result submission received",
+			description=(
+				f"**{_role_name_from_id(match.submitter_clan_role_id)}** "
+				f"**{match.submitter_score}-{match.opponent_score}** "
+				f"**{_role_name_from_id(match.opponent_clan_role_id)}**\n"
+				"Awaiting opponent confirmation at submission."
+			),
+			colour=discord.Colour.orange(),
+			timestamp=datetime.now(timezone.utc),
+		)
+		embed.add_field(name="Submitted by", value=f"<@{match.submitter_id}>", inline=False)
+		_set_stats_field(embed, match.stats_link)
+		embed.add_field(name="Correct stats link", value=f"`/scoreboard_admin_set_stats match_id:{match.match_id} stats_link:<url>`", inline=False)
+		embed.set_footer(text=f"Match ID: {match.match_id}")
+		try:
+			channel = guild.get_channel(ADMIN_RESULTS_CHANNEL_ID) or await guild.fetch_channel(ADMIN_RESULTS_CHANNEL_ID)
+			message = await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+		except (discord.HTTPException, AttributeError):
+			log.exception("Failed posting admin confirmation for %s", match.match_id)
+			return False
+		await self.store.update_match_metadata(match.match_id, admin_message_id=message.id)
+		return True
+
+	@app_commands.guilds(discord.Object(id=GUILD_ID))
+	@app_commands.command(name="scoreboard_admin_set_stats", description="Admin: replace a match's Bifrost or CRCON stats link")
+	@app_commands.check(_admin_app_command_check)
+	async def scoreboard_admin_set_stats(self, interaction: discord.Interaction, match_id: str, stats_link: str):
+		try:
+			stats_link = _validate_stats_link(stats_link)
+		except ValueError as exc:
+			await interaction.response.send_message(str(exc), ephemeral=True)
+			return
+		await interaction.response.defer(ephemeral=True)
+		match = await self.store.update_match_metadata(match_id, stats_link=stats_link)
+		if match is None:
+			await interaction.followup.send("Match not found. Use the Match ID in the result message.", ephemeral=True)
+			return
+		failed = False
+		for channel_id, message_id in (
+			(VALIDATION_CHANNEL_ID, match.validation_message_id),
+			(ADMIN_RESULTS_CHANNEL_ID, match.admin_message_id),
+		):
+			if not message_id:
+				continue
+			try:
+				channel = interaction.guild.get_channel(channel_id) or await interaction.guild.fetch_channel(channel_id)
+				message = await channel.fetch_message(message_id)
+				embed = message.embeds[0].copy() if message.embeds else discord.Embed(title="Match result", description=f"Match ID: {match_id}")
+				_set_stats_field(embed, stats_link)
+				await message.edit(embed=embed)
+			except (discord.HTTPException, AttributeError):
+				failed = True
+				log.exception("Failed refreshing stats link on message %s", message_id)
+		if not match.admin_message_id:
+			failed = not await self.post_admin_result(interaction.guild, match) or failed
+		notice = f"Stats link updated for match {match_id}."
+		if failed:
+			notice += " Saved, but a Discord message could not be refreshed; check channel permissions."
+		await interaction.followup.send(notice, ephemeral=True)
+
 	async def post_validation_message(self, guild: discord.Guild, match: PendingMatch) -> Optional[discord.Message]:
 		if VALIDATION_CHANNEL_ID == 0:
 			return None
@@ -1333,7 +1487,7 @@ class ScoreboardCog(commands.Cog):
 		a_name = _role_name_from_id(match.submitter_clan_role_id)
 		b_name = _role_name_from_id(match.opponent_clan_role_id)
 		embed = discord.Embed(
-			title="Match Result Submitted",
+			title="Test Match Result Submitted" if match.opponent_clan_role_id == TEST_CLAN_ROLE_ID else "Match Result Submitted",
 			description=(
 				f"**{a_name}** vs **{b_name}**\n"
 				f"Proposed score: **{match.submitter_score}-{match.opponent_score}**\n\n"
@@ -1343,6 +1497,7 @@ class ScoreboardCog(commands.Cog):
 			timestamp=datetime.now(timezone.utc),
 		)
 		embed.add_field(name="Submitted by", value=f"<@{match.submitter_id}>", inline=False)
+		_set_stats_field(embed, match.stats_link)
 		footer = f"Match ID: {match.match_id}"
 		if match.fixture_id:
 			footer += f" | Fixture ID: {match.fixture_id}"
@@ -1372,7 +1527,7 @@ class ScoreboardCog(commands.Cog):
 
 		# Only the opposing clan role can confirm.
 		opponent_role = interaction.guild.get_role(match.opponent_clan_role_id)
-		if opponent_role is None or opponent_role not in interaction.user.roles:
+		if not (match.opponent_clan_role_id == TEST_CLAN_ROLE_ID and _is_admin_member(interaction.user)) and (opponent_role is None or opponent_role not in interaction.user.roles):
 			await interaction.followup.send(
 				"Only a member of the opposing clan can confirm this result.",
 				ephemeral=True,
@@ -1406,10 +1561,11 @@ class ScoreboardCog(commands.Cog):
 		except Exception:
 			log.exception("Failed updating validation message")
 
-		await self.ensure_leaderboard_message()
+		if match.opponent_clan_role_id != TEST_CLAN_ROLE_ID:
+			await self.ensure_leaderboard_message()
 		# Leaderboard message is now the combined scoreboard image.
 
-		await interaction.followup.send("Confirmed and leaderboard updated.", ephemeral=True)
+		await interaction.followup.send("Test result confirmed; league standings unchanged." if match.opponent_clan_role_id == TEST_CLAN_ROLE_ID else "Confirmed and leaderboard updated.", ephemeral=True)
 
 	async def handle_dispute(self, interaction: discord.Interaction, match_id: str) -> None:
 		if not interaction.guild or not isinstance(interaction.user, discord.Member):
@@ -1424,7 +1580,7 @@ class ScoreboardCog(commands.Cog):
 			await interaction.followup.send(f"This match is already {match.status}.", ephemeral=True)
 			return
 		opponent_role = interaction.guild.get_role(match.opponent_clan_role_id)
-		if opponent_role is None or opponent_role not in interaction.user.roles:
+		if not (match.opponent_clan_role_id == TEST_CLAN_ROLE_ID and _is_admin_member(interaction.user)) and (opponent_role is None or opponent_role not in interaction.user.roles):
 			await interaction.followup.send(
 				"Only a member of the opposing clan can dispute this result.",
 				ephemeral=True,
@@ -1535,7 +1691,7 @@ class ScoreboardCog(commands.Cog):
 			await interaction.followup.send(str(e), ephemeral=True)
 			return
 
-		if match.status != "confirmed":
+		if match.status != "confirmed" or match.opponent_clan_role_id == TEST_CLAN_ROLE_ID:
 			match.submitter_score = int(new_a)
 			match.opponent_score = int(new_b)
 			match.status = "pending"
@@ -1575,6 +1731,7 @@ class ScoreboardCog(commands.Cog):
 							timestamp=datetime.now(timezone.utc),
 						)
 						embed.add_field(name="Submitted by", value=f"<@{match.submitter_id}>", inline=False)
+						_set_stats_field(embed, match.stats_link)
 						footer = f"Match ID: {match.match_id}"
 						if match.fixture_id:
 							footer += f" | Fixture ID: {match.fixture_id}"

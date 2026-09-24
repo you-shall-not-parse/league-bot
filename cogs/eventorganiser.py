@@ -21,6 +21,8 @@ from fixture_store import set_agreed_datetime as ledger_set_agreed_datetime
 from fixture_store import set_event_id as ledger_set_event_id
 from league_config import (
 	CLAN_ROLE_IDS,
+	TEST_CLAN_NAME,
+	TEST_CLAN_ROLE_ID,
 	DIVISION_CLANS,
 	DIVISION_FIXTURES_BY_ROUND,
 	ROUND_WINDOWS,
@@ -526,11 +528,13 @@ def _find_user_clan(member: discord.Member) -> Optional[str]:
 				break
 	if len(hits) == 1:
 		return hits[0]
+	if member.guild_permissions.administrator or any(role.id == TEST_CLAN_ROLE_ID for role in member.roles):
+		return TEST_CLAN_NAME
 	return None
 
 
 def _clan_role(guild: discord.Guild, clan: str) -> Optional[discord.Role]:
-	rid = CLAN_ROLE_IDS.get(clan)
+	rid = TEST_CLAN_ROLE_ID if clan == TEST_CLAN_NAME else CLAN_ROLE_IDS.get(clan)
 	if isinstance(rid, int) and rid > 0:
 		role = guild.get_role(rid)
 		if role is not None:
@@ -1440,7 +1444,7 @@ class OrganiseFixtureButton(discord.ui.Button):
 			)
 			return
 
-		division = _division_for_clan(clan)
+		division = next(iter(DIVISION_CLANS)) if clan == TEST_CLAN_NAME else _division_for_clan(clan)
 		if not division:
 			await interaction.response.send_message(
 				"Your clan is not assigned to an active division.",
@@ -1571,7 +1575,7 @@ class CreateThreadButton(discord.ui.Button):
 		round_no = view.round_no
 
 		valid_opponents = _opponents_for_fixture(division, round_no, requester_clan)
-		if opponent_clan not in valid_opponents:
+		if opponent_clan != TEST_CLAN_NAME and opponent_clan not in valid_opponents:
 			await interaction.response.send_message(
 				"That opponent is not scheduled for your clan in the selected division and round.",
 				ephemeral=True,
@@ -1613,7 +1617,7 @@ class CreateThreadButton(discord.ui.Button):
 		clan_a_role = _clan_role(interaction.guild, requester_clan)
 		clan_b_role = _clan_role(interaction.guild, opponent_clan)
 		invited = 0
-		for role in [clan_a_role, clan_b_role]:
+		for role in ([clan_b_role] if opponent_clan == TEST_CLAN_NAME else [clan_a_role, clan_b_role]):
 			if role is None:
 				continue
 			for member in role.members:
@@ -1639,7 +1643,11 @@ class CreateThreadButton(discord.ui.Button):
 
 		control_view = FixtureThreadView(thread_id=thread.id)
 		embed = _fixture_embed(s)
-		msg = await thread.send(content=f"{requester_clan} vs {opponent_clan}", embed=embed, view=control_view)
+		msg = await thread.send(
+			content=f"{requester_clan} vs {opponent_clan}" + (f" - <@&{TEST_CLAN_ROLE_ID}> test fixture" if opponent_clan == TEST_CLAN_NAME else ""),
+			embed=embed, view=control_view,
+			allowed_mentions=discord.AllowedMentions(everyone=False, users=False, roles=[discord.Object(id=TEST_CLAN_ROLE_ID)]),
+		)
 		s.control_message_id = msg.id
 		state = _load_state()
 		state["threads"][s.key] = _state_to_dict(s)
@@ -1697,6 +1705,8 @@ class OpponentRoundView(discord.ui.View):
 						default=(clan == self.opponent_clan),
 					)
 				)
+
+		options.append(discord.SelectOption(label="Test Clan (@admin)", value=TEST_CLAN_NAME, default=self.opponent_clan == TEST_CLAN_NAME))
 
 		if not options:
 			self.opp_select.options = [
@@ -1891,6 +1901,8 @@ class FixtureThreadView(discord.ui.View):
 			await interaction.response.send_message("Fixture state missing.", ephemeral=True)
 			return None
 		clan = _find_user_clan(interaction.user)
+		if s.clan_b == TEST_CLAN_NAME and clan not in (s.clan_a, s.clan_b) and (interaction.user.guild_permissions.administrator or any(role.id == TEST_CLAN_ROLE_ID for role in interaction.user.roles)):
+			clan = TEST_CLAN_NAME
 		if clan not in (s.clan_a, s.clan_b):
 			await interaction.response.send_message("You are not part of this fixture.", ephemeral=True)
 			return None

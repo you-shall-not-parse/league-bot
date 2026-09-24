@@ -47,3 +47,29 @@ after the next successful board refresh.
 
 Back up the `data` directory as part of normal bot backups. Do not manually edit
 `league.db` while the bot is running.
+
+Score submissions require a Bifrost or CRCON match stats URL. After selecting the
+opponent and score, **Submit Result** opens the stats-link form. Submitting the
+form saves the URL with the match in `data/scoreboard.json`, posts opponent
+validation, and sends a submission receipt to admin channel `1462544766775595123`.
+The receipt is acknowledgement of submission, not opponent confirmation.
+
+Admins can use `/scoreboard_admin_set_stats match_id:<id> stats_link:<url>` to
+replace a link on pending, confirmed, or disputed matches, including older matches
+without a link. Find the match ID in the admin receipt or validation message.
+This updates the stored URL and both messages without changing scores or status.
+The command uses the same administrator/admin-role check as scoreboard editing.
+URLs must use HTTP or HTTPS; custom CRCON hosts are supported. The bot checks URL
+format, not the contents or availability of the linked stats page.
+
+Restart the bot to load the change and sync the guild command. The bot needs
+View Channel, Send Messages, Embed Links, and Read Message History permissions
+in the admin results channel.
+
+Both opponent dropdowns include **Test Clan (@admin)**. Select a round when
+organising a test fixture. The private thread invites the requester and members
+of admin role `1109147750932676649`, then mentions that role. Test results use the
+normal stats form and admin receipt, and mention the admin role for validation.
+Admins can confirm or dispute them; confirmation leaves league standings and
+latest league results unchanged. Test matches do not require a scheduled fixture.
+Admins without a single clan role can open the flows using the test-clan identity.

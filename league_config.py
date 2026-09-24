@@ -11,6 +11,9 @@ GUILD_ID: int = 1462382487622914079
 # Role to ping when a fixture is marked as streamed.
 STREAMER_ROLE_ID: int = 1478166069662191627
 
+TEST_CLAN_NAME = "Test Clan"
+TEST_CLAN_ROLE_ID = 1109147750932676649  # Existing admin role; excluded from league standings.
+
 # Active clan roles (name -> role_id)
 # NOTE: BYE is not a Discord role and should not be added here.
 CLAN_ROLE_IDS: dict[str, int] = {
