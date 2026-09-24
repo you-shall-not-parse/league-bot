@@ -386,7 +386,7 @@ class EventDisplayCog(commands.Cog):
 
     def _save_admin_board_state(self) -> None:
         try:
-            with open(ADMIN_FIXTURE_BOARD_STATE_PATH, "w", encoding="utf-8") as file:
+            with open(ADMIN_FIXTURE_BOARD_STATE_PATH + ".tmp", "w", encoding="utf-8") as file:
                 json.dump(
                     {
                         "channel_id": ADMIN_FIXTURE_BOARD_CHANNEL_ID,
@@ -398,6 +398,7 @@ class EventDisplayCog(commands.Cog):
                     file,
                     indent=2,
                 )
+            os.replace(ADMIN_FIXTURE_BOARD_STATE_PATH + ".tmp", ADMIN_FIXTURE_BOARD_STATE_PATH)
         except Exception:
             logger.warning("Failed to persist admin fixture-board state.", exc_info=True)
 
@@ -689,7 +690,8 @@ class EventDisplayCog(commands.Cog):
         if isinstance(message_id, int):
             try:
                 message = await channel.fetch_message(message_id)
-            except Exception:
+            except discord.NotFound:
+                # Only a confirmed deletion warrants creating a replacement.
                 message = None
         if message is None:
             return await channel.send(embed=embed, view=view)
@@ -802,6 +804,7 @@ class EventDisplayCog(commands.Cog):
             view=AdminSummaryControlsView(),
         )
         self.admin_summary_message_id = summary_message.id
+        self._save_admin_board_state()
 
         for round_no in sorted(ROUND_WINDOWS):
             round_fixtures = [fixture for fixture in fixtures if int(fixture["round_no"]) == round_no]
@@ -828,6 +831,7 @@ class EventDisplayCog(commands.Cog):
                 view=AdminRoundControlsView(round_no),
             )
             self.admin_round_message_ids[str(round_no)] = round_message.id
+            self._save_admin_board_state()
         await self._retire_stale_admin_board(guild)
         self._save_admin_board_state()
         return True
