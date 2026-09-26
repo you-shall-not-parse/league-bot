@@ -1,3 +1,4 @@
+from league_storage import load_scoreboard, load_state
 import json
 import tempfile
 import unittest
@@ -50,7 +51,7 @@ class AdminBoardTests(unittest.IsolatedAsyncioTestCase):
             with patch.object(calendar, "ADMIN_FIXTURE_BOARD_STATE_PATH", state_path), patch.object(calendar, "ROUND_WINDOWS", {3: (), 4: ()}), patch.object(calendar, "list_fixture_views", return_value=[]), patch.object(calendar, "format_round_window", return_value="window"):
                 with self.assertRaises(TimeoutError):
                     await self.cog._refresh_admin_fixture_board(guild)
-                state = json.loads(Path(state_path).read_text())
+                state = load_state(state_path)
             self.assertEqual(state["summary_message_id"], 11)
             self.assertEqual(state["round_message_ids"], {"3": 33})
 

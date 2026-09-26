@@ -3,53 +3,61 @@ import json
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
+from data_paths import data_path
 
-from league_config import CLAN_ROLE_IDS, DIVISION_CLANS, DIVISION_FIXTURES_BY_ROUND, ROUND_WINDOWS, LEAGUE_NAME, SEASON_NUMBER
-from fixture_store import effective_status, fixture_id_for
+from league_config import canonical_clan_name
+from league_storage import SEASON_KEY, read_scoreboard
+from fixture_store import effective_status
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 def public_data(data_dir=None, rulebook_path=None):
-    directory = Path(data_dir) if data_dir else ROOT / "data"
+    directory = Path(data_dir).expanduser() if data_dir else Path(data_path("league.db")).parent
     db = directory / "league.db"
-    ledger = {}
-    if db.exists():
-        connection = sqlite3.connect(db.resolve().as_uri() + "?mode=ro", uri=True, timeout=5)
-        try:
-            connection.row_factory = sqlite3.Row
-            ledger = {row["fixture_id"]: dict(row) for row in connection.execute("SELECT * FROM fixtures")}
-        finally:
-            connection.close()
-    scoreboard_path = directory / "scoreboard.json"
-    scoreboard = json.loads(scoreboard_path.read_text(encoding="utf-8")) if scoreboard_path.exists() else {}
+    if not db.exists():
+        raise RuntimeError("League database is missing. Run python -m league_storage on the bot host.")
+    connection = sqlite3.connect(db.resolve().as_uri() + "?mode=ro", uri=True, timeout=5)
+    try:
+        connection.row_factory = sqlite3.Row
+        connection.execute("BEGIN")  # Fixtures, stats and links from one consistent snapshot.
+        if not connection.execute("SELECT 1 FROM league_migrations WHERE name='unified-sql-v1'").fetchone():
+            raise RuntimeError("League database migration is required.")
+        season = dict(connection.execute("SELECT * FROM seasons WHERE season_key=?", (SEASON_KEY,)).fetchone())
+        ledger = [dict(row) for row in connection.execute(
+            "SELECT * FROM fixtures WHERE season_key=? ORDER BY round_no,division,clan_a", (SEASON_KEY,))]
+        scoreboard = read_scoreboard(connection)
+        season_clans = [dict(row) for row in connection.execute(
+            "SELECT * FROM season_clans WHERE season_key=? ORDER BY division,name", (SEASON_KEY,))]
+    finally:
+        connection.close()
+    division_clans = {}
+    clan_roles = {}
+    for clan in season_clans:
+        division_clans.setdefault(clan["division"], []).append(clan["name"])
+        clan_roles[clan["name"]] = clan["role_id"]
     matches = scoreboard.get("pending_matches", {})
     fixtures = []
-    for division, rounds in DIVISION_FIXTURES_BY_ROUND.items():
-        for round_no, pairs in rounds.items():
-            start, end = ROUND_WINDOWS[round_no]
-            for a, b in pairs:
-                identity = fixture_id_for(division, round_no, a, b)
-                raw = ledger.get(identity, {})
-                view = dict(raw, window_start=start.isoformat(), window_end=end.isoformat())
-                status = effective_status(view) if raw else "scheduled"
-                confirmed = status == "confirmed"
-                match = matches.get(str(raw.get("score_match_id")), {})
-                link = str(match.get("stats_link") or "")
-                fixtures.append({
-                    "id": identity, "division": division, "round": round_no, "a": a, "b": b,
-                    "window_start": start.isoformat(), "window_end": end.isoformat(),
-                    "scheduled_at": raw.get("agreed_datetime_utc"),
-                    "status": status, "score_a": raw.get("score_a") if confirmed else None,
-                    "score_b": raw.get("score_b") if confirmed else None,
-                    "confirmed_at": raw.get("score_confirmed_at") if confirmed else None,
-                    "stats_url": link if confirmed and link.startswith(("https://", "http://")) else None,
-                })
+    for raw in ledger:
+        status = effective_status(raw)
+        confirmed = status == "confirmed"
+        match = matches.get(str(raw.get("score_match_id")), {})
+        link = str(match.get("stats_link") or "")
+        fixtures.append({
+            "id": raw["fixture_id"], "division": raw["division"], "round": raw["round_no"],
+            "a": canonical_clan_name(raw["clan_a"]), "b": canonical_clan_name(raw["clan_b"]),
+            "window_start": raw["window_start"], "window_end": raw["window_end"],
+            "scheduled_at": raw.get("agreed_datetime_utc"),
+            "status": status, "score_a": raw.get("score_a") if confirmed else None,
+            "score_b": raw.get("score_b") if confirmed else None,
+            "confirmed_at": raw.get("score_confirmed_at") if confirmed else None,
+            "stats_url": link if confirmed and link.startswith(("https://", "http://")) else None,
+        })
     divisions = []
-    for name, clans in DIVISION_CLANS.items():
+    for name, clans in division_clans.items():
         rows = []
         for clan in clans:
-            stats = scoreboard.get("clan_stats", {}).get(str(CLAN_ROLE_IDS[clan]))
+            stats = scoreboard.get("clan_stats", {}).get(str(clan_roles[clan]))
             if stats is None:
                 stats = {"w": 0, "l": 0, "played": 0, "maps_for": 0, "maps_against": 0}
                 for fixture in fixtures:
@@ -76,13 +84,13 @@ def public_data(data_dir=None, rulebook_path=None):
         divisions.append({"name": name, "rows": rows})
     rules = Path(rulebook_path) if rulebook_path else ROOT / "league_web" / "rulebook.json"
     return {
-        "league_name": LEAGUE_NAME,
-        "season_number": SEASON_NUMBER,
-        "clan_logos": {clan: f"/assets/clans/{clan}.png" for clans in DIVISION_CLANS.values() for clan in clans},
+        "league_name": season["name"],
+        "season_number": season["number"],
+        "clan_logos": {clan: f"/assets/clans/{clan}.png" for clans in division_clans.values() for clan in clans},
         "updated_at": datetime.now(timezone.utc).isoformat(),
-        "source": "live" if ledger else "configured_schedule",
-        "season": min(start for start, _ in ROUND_WINDOWS.values()).year,
+        "source": "live",
+        "season": int(season["starts_on"][:4]),
         "divisions": divisions, "fixtures": fixtures,
-        "rounds": [{"number": n, "start": s.isoformat(), "end": e.isoformat()} for n, (s, e) in ROUND_WINDOWS.items()],
+        "rounds": [{"number": n, "start": min(f["window_start"] for f in fixtures if f["round"] == n), "end": max(f["window_end"] for f in fixtures if f["round"] == n)} for n in sorted({f["round"] for f in fixtures})],
         "rulebook": json.loads(rules.read_text(encoding="utf-8")),
     }

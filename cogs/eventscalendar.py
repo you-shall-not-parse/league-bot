@@ -1,6 +1,5 @@
 import logging
 import re
-import json
 import os
 import asyncio
 from collections import Counter
@@ -11,8 +10,8 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 from data_paths import data_path
+from league_storage import load_state, save_state
 from fixture_store import effective_status as ledger_effective_status
-from fixture_store import fixture_id_for as ledger_fixture_id_for
 from fixture_store import fixture_for_deleted_event as ledger_fixture_for_deleted_event
 from fixture_store import get_fixture as ledger_get_fixture
 from fixture_store import list_fixture_history as ledger_list_fixture_history
@@ -43,17 +42,17 @@ logger = logging.getLogger(__name__)
 # =============================
 # (Moved to league_config.py)
 
-# Path to save events JSON
-EVENTS_JSON_PATH = data_path("levents_history.json")
+# SQLite event-history state identifier
+EVENTS_HISTORY_STATE = data_path("levents_history")
 
 # Path to persist the display message across restarts
-EVENTS_DISPLAY_STATE_PATH = data_path("levents_display_state.json")
+EVENTS_DISPLAY_STATE_PATH = data_path("levents_display_state")
 
 # Past-fixture board and score submission data.
-PAST_EVENTS_DISPLAY_STATE_PATH = data_path("past_events_display_state.json")
+PAST_EVENTS_DISPLAY_STATE_PATH = data_path("past_events_display_state")
 
 # Admin fixture-control board message IDs.
-ADMIN_FIXTURE_BOARD_STATE_PATH = data_path("admin_fixture_board_state.json")
+ADMIN_FIXTURE_BOARD_STATE_PATH = data_path("admin_fixture_board_state")
 
 # -----------------------------
 # EVENT THREADS (AUTO)
@@ -71,7 +70,7 @@ EVENT_THREADS_PARENT_CHANNEL_ID = 1462382488784470181
 EVENT_THREAD_AUTO_ARCHIVE_MINUTES = 10080  # 7 days
 
 # Persist which events we've already handled so we don't create duplicate threads.
-EVENTS_THREAD_STATE_PATH = data_path("levents_threads_state.json")
+EVENTS_THREAD_STATE_PATH = data_path("levents_threads_state")
 
 # -----------------------------
 # EVENT TITLE EMOJI TAGGING
@@ -137,10 +136,7 @@ class EventDisplayCog(commands.Cog):
         if not ENABLE_EVENT_THREADS:
             return {"initialized": False, "seen_event_ids": [], "threads": {}}
         try:
-            if not os.path.exists(EVENTS_THREAD_STATE_PATH):
-                return {"initialized": False, "seen_event_ids": [], "threads": {}}
-            with open(EVENTS_THREAD_STATE_PATH, "r", encoding="utf-8") as f:
-                state = json.load(f)
+            state = load_state(EVENTS_THREAD_STATE_PATH)
             if not isinstance(state, dict):
                 return {"initialized": False, "seen_event_ids": [], "threads": {}}
             state.setdefault("initialized", False)
@@ -158,8 +154,7 @@ class EventDisplayCog(commands.Cog):
             if not isinstance(self._thread_state, dict):
                 return
             self._thread_state["updated_at"] = datetime.utcnow().isoformat()
-            with open(EVENTS_THREAD_STATE_PATH, "w", encoding="utf-8") as f:
-                json.dump(self._thread_state, f, indent=2, ensure_ascii=False)
+            save_state(EVENTS_THREAD_STATE_PATH, self._thread_state)
         except Exception:
             logger.warning("Failed to persist events thread state.", exc_info=True)
 
@@ -272,10 +267,7 @@ class EventDisplayCog(commands.Cog):
 
     def _load_display_message_id(self) -> Optional[int]:
         try:
-            if not os.path.exists(EVENTS_DISPLAY_STATE_PATH):
-                return None
-            with open(EVENTS_DISPLAY_STATE_PATH, "r", encoding="utf-8") as f:
-                state = json.load(f)
+            state = load_state(EVENTS_DISPLAY_STATE_PATH)
             channel_id = state.get("channel_id")
             message_id = state.get("message_id")
             if channel_id != EVENT_DISPLAY_CHANNEL_ID:
@@ -294,17 +286,13 @@ class EventDisplayCog(commands.Cog):
                 "message_id": self.display_message_id,
                 "updated_at": datetime.utcnow().isoformat(),
             }
-            with open(EVENTS_DISPLAY_STATE_PATH, "w", encoding="utf-8") as f:
-                json.dump(state, f, indent=2, ensure_ascii=False)
+            save_state(EVENTS_DISPLAY_STATE_PATH, state)
         except Exception:
             logger.warning("Failed to persist events display state.", exc_info=True)
 
     def _load_past_display_message_id(self) -> Optional[int]:
         try:
-            if not os.path.exists(PAST_EVENTS_DISPLAY_STATE_PATH):
-                return None
-            with open(PAST_EVENTS_DISPLAY_STATE_PATH, "r", encoding="utf-8") as f:
-                state = json.load(f)
+            state = load_state(PAST_EVENTS_DISPLAY_STATE_PATH)
             if state.get("channel_id") != PAST_EVENTS_DISPLAY_CHANNEL_ID:
                 return None
             message_id = state.get("message_id")
@@ -322,16 +310,14 @@ class EventDisplayCog(commands.Cog):
                 "archive_message_ids": self.past_archive_message_ids,
                 "updated_at": datetime.now(timezone.utc).isoformat(),
             }
-            with open(PAST_EVENTS_DISPLAY_STATE_PATH, "w", encoding="utf-8") as f:
-                json.dump(state, f, indent=2, ensure_ascii=False)
+            save_state(PAST_EVENTS_DISPLAY_STATE_PATH, state)
         except Exception:
             logger.warning("Failed to persist past-events display state.", exc_info=True)
 
     @staticmethod
     def _load_past_display_state() -> dict:
         try:
-            with open(PAST_EVENTS_DISPLAY_STATE_PATH, "r", encoding="utf-8") as f:
-                state = json.load(f)
+            state = load_state(PAST_EVENTS_DISPLAY_STATE_PATH)
             if not isinstance(state, dict) or state.get("channel_id") != PAST_EVENTS_DISPLAY_CHANNEL_ID:
                 return {}
             return state
@@ -351,8 +337,7 @@ class EventDisplayCog(commands.Cog):
     @staticmethod
     def _load_admin_board_state() -> dict:
         try:
-            with open(ADMIN_FIXTURE_BOARD_STATE_PATH, "r", encoding="utf-8") as file:
-                state = json.load(file)
+            state = load_state(ADMIN_FIXTURE_BOARD_STATE_PATH)
             if not isinstance(state, dict):
                 return {"summary_message_id": None, "round_message_ids": {}, "stale_board": None}
             if state.get("channel_id") != ADMIN_FIXTURE_BOARD_CHANNEL_ID:
@@ -386,19 +371,13 @@ class EventDisplayCog(commands.Cog):
 
     def _save_admin_board_state(self) -> None:
         try:
-            with open(ADMIN_FIXTURE_BOARD_STATE_PATH + ".tmp", "w", encoding="utf-8") as file:
-                json.dump(
-                    {
-                        "channel_id": ADMIN_FIXTURE_BOARD_CHANNEL_ID,
-                        "summary_message_id": self.admin_summary_message_id,
-                        "round_message_ids": self.admin_round_message_ids,
-                        "stale_board": self.stale_admin_board,
-                        "updated_at": datetime.now(timezone.utc).isoformat(),
-                    },
-                    file,
-                    indent=2,
-                )
-            os.replace(ADMIN_FIXTURE_BOARD_STATE_PATH + ".tmp", ADMIN_FIXTURE_BOARD_STATE_PATH)
+            save_state(ADMIN_FIXTURE_BOARD_STATE_PATH, {
+                "channel_id": ADMIN_FIXTURE_BOARD_CHANNEL_ID,
+                "summary_message_id": self.admin_summary_message_id,
+                "round_message_ids": self.admin_round_message_ids,
+                "stale_board": self.stale_admin_board,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            })
         except Exception:
             logger.warning("Failed to persist admin fixture-board state.", exc_info=True)
 
@@ -1008,8 +987,8 @@ class EventDisplayCog(commands.Cog):
 
                 embed = await self.create_events_embed(guild, sorted_events)
 
-                # Save all events (not just filtered ones) to JSON
-                await self.save_events_to_json(events)
+                # Save all events (not just filtered ones) to SQLite
+                await self.save_events_to_database(events)
                 past_refreshed = False
                 try:
                     past_refreshed = await self._refresh_past_events_board(guild)
@@ -1098,7 +1077,7 @@ class EventDisplayCog(commands.Cog):
             return
         # Preserve the last known metadata so a completed/deleted event remains
         # represented on the season history board.
-        await self.save_events_to_json([scheduled_event])
+        await self.save_events_to_database([scheduled_event])
         status_name = str(getattr(scheduled_event.status, "name", scheduled_event.status)).lower()
         event_end = scheduled_event.end_time or scheduled_event.start_time
         still_due = event_end is None or event_end.astimezone(timezone.utc) > datetime.now(timezone.utc)
@@ -1117,7 +1096,7 @@ class EventDisplayCog(commands.Cog):
             return
         status_name = str(getattr(after.status, "name", after.status)).lower()
         if status_name in {"cancelled", "canceled"}:
-            await self.save_events_to_json([after])
+            await self.save_events_to_database([after])
             fixture_id = ledger_unlink_event(after.id, actor="discord:cancel")
             if fixture_id is not None:
                 await self.clear_organiser_for_reorganisation(fixture_id, actor="Discord cancellation")
@@ -1125,24 +1104,16 @@ class EventDisplayCog(commands.Cog):
                 return
         self._debounced_refresh()
 
-    async def save_events_to_json(self, events: list[discord.ScheduledEvent]):
+    async def save_events_to_database(self, events: list[discord.ScheduledEvent]):
         """
-        Save all events to a JSON file for historical tracking.
+        Save event history in the shared SQLite database.
         
         Args:
             events: List of all scheduled events
         """
         try:
-            # Load existing data if file exists
-            existing_data = {}
-            if os.path.exists(EVENTS_JSON_PATH):
-                try:
-                    with open(EVENTS_JSON_PATH, 'r', encoding='utf-8') as f:
-                        existing_data = json.load(f)
-                except json.JSONDecodeError:
-                    logger.warning("Could not read existing events JSON, creating new file")
-                    existing_data = {}
-            
+            existing_data = load_state(EVENTS_HISTORY_STATE)
+
             # Update with current events
             for event in events:
                 event_data = {
@@ -1162,13 +1133,12 @@ class EventDisplayCog(commands.Cog):
                 existing_data[str(event.id)] = event_data
             
             # Save to file
-            with open(EVENTS_JSON_PATH, 'w', encoding='utf-8') as f:
-                json.dump(existing_data, f, indent=2, ensure_ascii=False)
+            save_state(EVENTS_HISTORY_STATE, existing_data)
             
-            logger.debug(f"Saved {len(events)} events to JSON")
+            logger.debug(f"Saved {len(events)} events to SQLite")
             
         except Exception as e:
-            logger.error(f"Error saving events to JSON: {e}", exc_info=True)
+            logger.error(f"Error saving events to SQLite: {e}", exc_info=True)
 
     async def create_events_embed(
         self,
@@ -1313,15 +1283,11 @@ class AdminManageFixtureButton(discord.ui.Button):
 class AdminRoundControlsView(discord.ui.View):
     def __init__(self, round_no: int):
         super().__init__(timeout=None)
-        for division, rounds in DIVISION_FIXTURES_BY_ROUND.items():
-            for clan_a, clan_b in rounds.get(round_no, []):
-                self.add_item(
-                    AdminManageFixtureButton(
-                        ledger_fixture_id_for(division, round_no, clan_a, clan_b),
-                        clan_a,
-                        clan_b,
-                    )
-                )
+        for fixture in list_fixture_views():
+            if fixture["round_no"] == round_no:
+                self.add_item(AdminManageFixtureButton(
+                    fixture["fixture_id"], fixture["clan_a"], fixture["clan_b"],
+                ))
 
 
 class AdminFixtureActionsView(discord.ui.View):

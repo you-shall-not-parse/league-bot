@@ -1,5 +1,4 @@
 import asyncio
-import json
 import os
 import random
 import secrets
@@ -16,6 +15,7 @@ from discord.ext import tasks
 from cogs.streamercalendar import maybe_post_streamer_request, maybe_remove_streamer_request
 
 from data_paths import data_path
+from league_storage import load_state, save_state, load_scoreboard
 from fixture_store import mark_thread as ledger_mark_thread
 from fixture_store import set_agreed_datetime as ledger_set_agreed_datetime
 from fixture_store import set_event_id as ledger_set_event_id
@@ -62,7 +62,7 @@ FIXTURE_RETENTION_AFTER_START = timedelta(hours=8)
 CORE_REMINDER_INTERVAL = timedelta(days=7)
 SCORE_REMINDER_DELAY_AFTER_EVENT = timedelta(hours=2)
 SCORE_REMINDER_CHANNEL_ID = 1462382488784470181
-SCOREBOARD_STATE_PATH = data_path("scoreboard.json")
+SCOREBOARD_STATE_PATH = data_path("scoreboard")
 SCORE_REMINDER_LOCK = asyncio.Lock()
 
 # Roles included in every weekly fixture-thread reminder in addition to the
@@ -111,7 +111,7 @@ MIDPOINTS_BY_MAP: dict[str, list[str]] = {
 REROLL_LIMIT = 3
 
 # Where we persist state
-STATE_PATH = data_path("fixture_organiser_state.json")
+STATE_PATH = data_path("fixture_organiser_state")
 
 OPERATION_DRAW_ASSET_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "operation_draw_assets")
 OPERATION_DRAW_FONT_PATH = os.path.join(os.path.dirname(__file__), "scoreboard_font.ttf")
@@ -133,24 +133,14 @@ OPERATION_DRAW_STAGE_FILES: dict[str, str] = {
 
 
 def _load_state() -> dict[str, Any]:
-	if not os.path.exists(STATE_PATH):
-		return {"organiser_message": None, "threads": {}}
-	try:
-		with open(STATE_PATH, "r", encoding="utf-8") as f:
-			data = json.load(f)
-		if not isinstance(data, dict):
-			return {"organiser_message": None, "threads": {}}
-		data.setdefault("organiser_message", None)
-		data.setdefault("threads", {})
-		return data
-	except Exception:
-		return {"organiser_message": None, "threads": {}}
+	data = load_state(STATE_PATH)
+	data.setdefault("organiser_message", None)
+	data.setdefault("threads", {})
+	return data
 
 
 def _save_state(state: dict[str, Any]) -> None:
-	os.makedirs(os.path.dirname(STATE_PATH), exist_ok=True)
-	with open(STATE_PATH, "w", encoding="utf-8") as f:
-		json.dump(state, f, indent=2, ensure_ascii=False)
+	save_state(STATE_PATH, state)
 
 
 def _ordinal(n: int) -> str:
@@ -1139,8 +1129,7 @@ def _fixture_end_utc(s: FixtureState) -> Optional[datetime]:
 def _fixture_has_score_submission(s: FixtureState, *, event_end: datetime) -> bool:
 	"""Return true once either clan has submitted this fixture's score."""
 	try:
-		with open(SCOREBOARD_STATE_PATH, "r", encoding="utf-8") as file:
-			scoreboard_state = json.load(file)
+		scoreboard_state = load_scoreboard(SCOREBOARD_STATE_PATH)
 	except FileNotFoundError:
 		return False
 	except Exception:

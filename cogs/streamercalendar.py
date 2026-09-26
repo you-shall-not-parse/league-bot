@@ -1,5 +1,4 @@
 import asyncio
-import json
 import os
 import re
 from datetime import datetime, timedelta, timezone
@@ -10,6 +9,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 from data_paths import data_path
+from league_storage import load_state, save_state, load_scoreboard
 from league_config import STREAMER_ROLE_ID
 
 # =============================
@@ -22,8 +22,8 @@ STREAMER_REQUESTS_CHANNEL_ID = 1484581158124519454
 # Channel where the streamer calendar/board is posted.
 STREAMER_CALENDAR_CHANNEL_ID = 1487937216159416442
 
-# Where we persist streamer request board state
-STREAMER_STATE_PATH = data_path("streamer_requests_state.json")
+# SQLite streamer request state identifier
+STREAMER_STATE_PATH = data_path("streamer_requests_state")
 
 STREAMER_GUILD_ID = 1462382487622914079
 STREAMER_TARGET_GUILD = discord.Object(id=STREAMER_GUILD_ID)
@@ -34,31 +34,16 @@ STREAMER_CLEANUP_INTERVAL_MINUTES = 15
 
 
 def _load_streamer_state() -> dict[str, Any]:
-	if not os.path.exists(STREAMER_STATE_PATH):
-		return {"board_message_id": None, "requests": {}, "suppressed_thread_ids": []}
-	try:
-		with open(STREAMER_STATE_PATH, "r", encoding="utf-8") as f:
-			data = json.load(f)
-		if not isinstance(data, dict):
-			return {"board_message_id": None, "requests": {}, "suppressed_thread_ids": []}
-		data.setdefault("board_message_id", None)
-		data.setdefault("requests", {})
-		data.setdefault("suppressed_thread_ids", [])
-		if not isinstance(data.get("requests"), dict):
-			data["requests"] = {}
-		if not isinstance(data.get("suppressed_thread_ids"), list):
-			data["suppressed_thread_ids"] = []
-		else:
-			data["suppressed_thread_ids"] = _dedupe_ints(data.get("suppressed_thread_ids", []))
-		return data
-	except Exception:
-		return {"board_message_id": None, "requests": {}, "suppressed_thread_ids": []}
+	data = load_state(STREAMER_STATE_PATH)
+	data.setdefault("board_message_id", None)
+	data.setdefault("requests", {})
+	data.setdefault("suppressed_thread_ids", [])
+	_normalize_streamer_requests(data)
+	return data
 
 
 def _save_streamer_state(state: dict[str, Any]) -> None:
-	os.makedirs(os.path.dirname(STREAMER_STATE_PATH), exist_ok=True)
-	with open(STREAMER_STATE_PATH, "w", encoding="utf-8") as f:
-		json.dump(state, f, indent=2, ensure_ascii=False)
+	save_state(STREAMER_STATE_PATH, state)
 
 
 def _discord_message_url(*, guild_id: int, channel_id: int, message_id: int) -> str:
@@ -1170,7 +1155,7 @@ class StreamerCalendar(commands.Cog):
 
 	@commands.Cog.listener()
 	async def on_raw_message_delete(self, payload: discord.RawMessageDeleteEvent):
-		# If a streamer request message is deleted, remove it from JSON.
+		# If a streamer request message is deleted, remove it from SQLite.
 		if not (isinstance(STREAMER_REQUESTS_CHANNEL_ID, int) and STREAMER_REQUESTS_CHANNEL_ID > 0):
 			return
 		if payload.channel_id != STREAMER_REQUESTS_CHANNEL_ID:

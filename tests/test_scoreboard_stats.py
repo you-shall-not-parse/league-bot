@@ -1,3 +1,4 @@
+from league_storage import load_scoreboard, load_state
 import json
 import tempfile
 import unittest
@@ -37,7 +38,7 @@ class StatsTests(unittest.IsolatedAsyncioTestCase):
             store._path = str(Path(directory) / "scoreboard.json")
             store.data = {"pending_matches": {"match123": old}}
             updated = await store.update_match_metadata("match123", stats_link="https://host/match/5", admin_message_id=44)
-            saved = sb.PendingMatch.from_dict(json.loads(Path(store._path).read_text())["pending_matches"]["match123"])
+            saved = sb.PendingMatch.from_dict(load_scoreboard(store._path)["pending_matches"]["match123"])
             self.assertEqual(saved, updated)
             self.assertEqual(saved.submitter_score, 3)
 

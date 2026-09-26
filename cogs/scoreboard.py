@@ -1,5 +1,4 @@
 import asyncio
-import json
 import logging
 import os
 import uuid
@@ -13,6 +12,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from data_paths import data_path
+from league_storage import load_scoreboard, save_scoreboard
 from fixture_store import clear_scores_for_division as ledger_clear_scores_for_division
 from fixture_store import fixture_for_roles as ledger_fixture_for_roles
 from fixture_store import record_score as ledger_record_score
@@ -329,19 +329,13 @@ class PendingMatch:
 
 class ScoreboardStore:
 	def __init__(self) -> None:
-		self._path = data_path("scoreboard.json")
+		self._path = data_path("scoreboard")
 		self._lock = asyncio.Lock()
 		self.data: dict[str, Any] = {}
 
 	async def load(self) -> None:
 		async with self._lock:
-			if os.path.exists(self._path):
-				try:
-					with open(self._path, "r", encoding="utf-8") as f:
-						self.data = json.load(f)
-				except Exception:
-					log.exception("Failed reading %s, starting fresh", self._path)
-					self.data = {}
+			self.data = load_scoreboard(self._path)
 
 			self.data.setdefault("scoreboard_message_id", None)
 			self.data.setdefault("leaderboard_message_id", None)
@@ -351,20 +345,7 @@ class ScoreboardStore:
 			self.data.setdefault("clan_stats", {})
 			self.data.setdefault("pending_matches", {})  # match_id -> match dict
 			self.data.setdefault("pending_by_validation_message", {})  # message_id(str) -> match_id
-			pending_matches = self.data["pending_matches"]
-			for raw_match in pending_matches.values() if isinstance(pending_matches, dict) else []:
-				if not isinstance(raw_match, dict) or raw_match.get("fixture_id") or raw_match.get("opponent_clan_role_id") == TEST_CLAN_ROLE_ID:
-					continue
-				try:
-					fixture = ledger_fixture_for_roles(
-						int(raw_match["submitter_clan_role_id"]),
-						int(raw_match["opponent_clan_role_id"]),
-						submitted_at=str(raw_match.get("created_at") or ""),
-					)
-				except Exception:
-					fixture = None
-				if fixture is not None:
-					raw_match["fixture_id"] = str(fixture["fixture_id"])
+			# Fixture associations are resolved by the SQL migration/write transaction.
 
 			message_ids = self.data.get("leaderboard_message_ids")
 			if not isinstance(message_ids, dict):
@@ -395,10 +376,7 @@ class ScoreboardStore:
 
 	async def save(self) -> None:
 		async with self._lock:
-			tmp = self._path + ".tmp"
-			with open(tmp, "w", encoding="utf-8") as f:
-				json.dump(self.data, f, indent=2)
-			os.replace(tmp, self._path)
+			save_scoreboard(self._path, self.data)
 
 	async def _ensure_clans_locked(self) -> None:
 		stats: dict[str, Any] = self.data.setdefault("clan_stats", {})
@@ -505,6 +483,8 @@ class ScoreboardStore:
 			d = self.data.get("pending_matches", {}).get(match_id)
 			if not d:
 				return None
+			if d.get("status") == "confirmed":
+				return PendingMatch.from_dict(d)
 			d["status"] = "confirmed"
 			d["confirmed_by_id"] = int(confirmed_by_id)
 			d["confirmed_at"] = _utcnow_iso()

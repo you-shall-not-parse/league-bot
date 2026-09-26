@@ -48,4 +48,6 @@ def create_app(data_dir=None):
 
 
 if __name__ == "__main__":
+    from fixture_store import initialize
+    initialize()
     web.run_app(create_app(os.environ.get("LEAGUE_DATA_DIR")), host="127.0.0.1", port=int(os.environ.get("LEAGUE_WEB_PORT", "7030")))

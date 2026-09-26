@@ -1,32 +1,27 @@
 import discord
 from discord.ext import commands, tasks
-import json
 import os
 from typing import Optional
 
 from data_paths import data_path
+from league_storage import load_state, save_state
 
 # ---------------- CONFIG ----------------
 GUILD_ID = 1462382487622914079  # your guild ID
 COG_DIR = os.path.dirname(__file__)
 PROJECT_ROOT = os.path.abspath(os.path.join(COG_DIR, os.pardir))
-DATA_FILE = data_path("stored_embeds.json")
+DATA_FILE = data_path("stored_embeds")
 
 # Auto-refresh embeds periodically so dynamic sections (like clan reps) stay updated.
 AUTO_SYNC_INTERVAL_MINUTES: int = 30
 
 # ---------------- HELPER FUNCTIONS ----------------
 def load_data():
-    if not os.path.exists(DATA_FILE):
-        return {}
-    with open(DATA_FILE, "r") as f:
-        return json.load(f)
+    return load_state(DATA_FILE)
 
 
 def save_data(data):
-    os.makedirs(os.path.dirname(DATA_FILE), exist_ok=True)
-    with open(DATA_FILE, "w") as f:
-        json.dump(data, f, indent=4)
+    save_state(DATA_FILE, data)
 
 
 class EmbedManager(commands.Cog):

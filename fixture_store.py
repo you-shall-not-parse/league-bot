@@ -16,6 +16,7 @@ from datetime import datetime, time, timedelta, timezone
 from typing import Any, Iterator, Optional
 
 from data_paths import data_path
+from league_storage import SEASON_KEY, backup_before_migration, migrate
 from league_config import (
     CLAN_NAME_ALIASES,
     CLAN_ROLE_IDS,
@@ -27,9 +28,6 @@ from league_config import (
 
 
 DB_PATH = data_path("league.db")
-ORGANISER_STATE_PATH = data_path("fixture_organiser_state.json")
-EVENT_HISTORY_PATH = data_path("levents_history.json")
-SCOREBOARD_STATE_PATH = data_path("scoreboard.json")
 
 
 def _now_iso() -> str:
@@ -77,6 +75,7 @@ def _configured_fixture(round_no: int, clan_a: str, clan_b: str) -> Optional[tup
 
 def initialize() -> None:
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+    backup_before_migration(DB_PATH)
     with _connect() as connection:
         connection.executescript(
             """
@@ -120,6 +119,12 @@ def initialize() -> None:
             str(row["name"])
             for row in connection.execute("PRAGMA table_info(fixtures)").fetchall()
         }
+        if "season_key" not in fixture_columns:
+            connection.execute("ALTER TABLE fixtures ADD COLUMN season_key TEXT")
+        # Tag existing active-season rows by their season windows, not generated IDs.
+        start = min(s for s, _ in ROUND_WINDOWS.values()).isoformat()
+        end = max(e for _, e in ROUND_WINDOWS.values()).isoformat()
+        connection.execute("UPDATE fixtures SET season_key=? WHERE season_key IS NULL AND window_start<=? AND window_end>=?", (SEASON_KEY, end, start))
         if "event_cancelled_at" not in fixture_columns:
             connection.execute("ALTER TABLE fixtures ADD COLUMN event_cancelled_at TEXT")
         if "deleted_event_id" not in fixture_columns:
@@ -132,18 +137,22 @@ def initialize() -> None:
                 for clan_a, clan_b in fixtures:
                     fixture_id = fixture_id_for(division, round_no, clan_a, clan_b)
                     connection.execute(
+                        "UPDATE fixtures SET season_key=? WHERE fixture_id=? AND season_key IS NULL AND season_year=?",
+                        (SEASON_KEY, fixture_id, season_year),
+                    )
+                    existing = connection.execute(
+                        "SELECT fixture_id,clan_a,clan_b FROM fixtures WHERE season_key=? AND division=? AND round_no=?",
+                        (SEASON_KEY, division, round_no),
+                    ).fetchall()
+                    if any({canonical_clan_name(r["clan_a"]), canonical_clan_name(r["clan_b"])} == {clan_a, clan_b} for r in existing):
+                        continue
+                    connection.execute(
                         """
                         INSERT INTO fixtures (
                             fixture_id, season_year, division, round_no, clan_a, clan_b,
-                            window_start, window_end, updated_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        ON CONFLICT(fixture_id) DO UPDATE SET
-                            division=excluded.division,
-                            round_no=excluded.round_no,
-                            clan_a=excluded.clan_a,
-                            clan_b=excluded.clan_b,
-                            window_start=excluded.window_start,
-                            window_end=excluded.window_end
+                            window_start, window_end, updated_at, season_key
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(fixture_id) DO NOTHING
                         """,
                         (
                             fixture_id,
@@ -155,9 +164,10 @@ def initialize() -> None:
                             window_start.isoformat(),
                             window_end.isoformat(),
                             now,
+                            SEASON_KEY,
                         ),
                     )
-    migrate_legacy_data()
+    migrate(DB_PATH)
     repair_deleted_event_relinks()
 
 
@@ -187,13 +197,15 @@ def find_fixture(round_no: int, clan_a: str, clan_b: str) -> Optional[dict[str, 
     if configured is None:
         return None
     division, canonical_a, canonical_b = configured
-    return get_fixture(fixture_id_for(division, round_no, canonical_a, canonical_b))
+    matches = [f for f in list_fixtures() if f["division"] == division and f["round_no"] == round_no
+               and {canonical_clan_name(f["clan_a"]), canonical_clan_name(f["clan_b"])} == {canonical_a, canonical_b}]
+    return matches[0] if len(matches) == 1 else None
 
 
 def list_fixtures() -> list[dict[str, Any]]:
     initialize_schema_only()
     with _connect() as connection:
-        rows = connection.execute("SELECT * FROM fixtures ORDER BY round_no, division, clan_a").fetchall()
+        rows = connection.execute("SELECT * FROM fixtures WHERE season_key=? ORDER BY round_no, division, clan_a", (SEASON_KEY,)).fetchall()
     return [dict(row) for row in rows]
 
 
@@ -502,8 +514,8 @@ def update_score_status(match_id: str, status: str, *, confirmed_at: Optional[st
 def clear_scores_for_division(division: Optional[str] = None, *, actor: Optional[str] = None) -> int:
     """Clear canonical scores during an explicit leaderboard reset."""
     initialize_schema_only()
-    where = "WHERE division = ?" if division is not None else ""
-    parameters: tuple[Any, ...] = (division,) if division is not None else ()
+    where = "WHERE season_key = ?" + (" AND division = ?" if division is not None else "")
+    parameters: tuple[Any, ...] = (SEASON_KEY, division) if division is not None else (SEASON_KEY,)
     now = _now_iso()
     with _connect() as connection:
         rows = connection.execute(
@@ -536,86 +548,5 @@ def clear_scores_for_division(division: Optional[str] = None, *, actor: Optional
 
 
 def migrate_legacy_data() -> None:
-    """Best-effort, idempotent migration from the existing JSON stores."""
-    try:
-        with open(ORGANISER_STATE_PATH, "r", encoding="utf-8") as file:
-            organiser = json.load(file)
-    except Exception:
-        organiser = {}
-    for raw in organiser.get("threads", {}).values() if isinstance(organiser, dict) else []:
-        if not isinstance(raw, dict):
-            continue
-        try:
-            fixture = find_fixture(int(raw["round_no"]), str(raw["clan_a"]), str(raw["clan_b"]))
-        except Exception:
-            fixture = None
-        if fixture is None:
-            continue
-        fields: dict[str, Any] = {
-            "thread_id": raw.get("thread_id"),
-            "control_message_id": raw.get("control_message_id"),
-        }
-        if not fixture.get("event_cancelled_at"):
-            fields["scheduled_event_id"] = raw.get("scheduled_event_id")
-            fields["agreed_datetime_utc"] = raw.get("agreed_datetime_utc")
-        _update(fixture["fixture_id"], {k: v for k, v in fields.items() if v is not None})
-
-    try:
-        with open(EVENT_HISTORY_PATH, "r", encoding="utf-8") as file:
-            history = json.load(file)
-    except Exception:
-        history = {}
-    events = [event for event in history.values() if isinstance(event, dict)] if isinstance(history, dict) else []
-    events.sort(key=lambda event: str(event.get("start_time") or ""), reverse=True)
-    for event in events:
-        name = str(event.get("name") or "")
-        round_match = re.search(r"\bRound\s+(\d+)\s*:", name, flags=re.IGNORECASE)
-        clans: list[str] = []
-        searchable_names = [*CLAN_ROLE_IDS, *CLAN_NAME_ALIASES]
-        for clan in sorted(searchable_names, key=len, reverse=True):
-            if re.search(rf"(?<!\w){re.escape(clan)}(?!\w)", name, flags=re.IGNORECASE):
-                canonical_name = canonical_clan_name(clan)
-                if canonical_name not in clans:
-                    clans.append(canonical_name)
-        if round_match is None or len(clans) != 2:
-            continue
-        fixture = find_fixture(int(round_match.group(1)), clans[0], clans[1])
-        if fixture is None or fixture.get("event_cancelled_at"):
-            continue
-        fields: dict[str, Any] = {}
-        if event.get("id") and not fixture.get("scheduled_event_id"):
-            fields["scheduled_event_id"] = int(event["id"])
-        if event.get("start_time") and not fixture.get("agreed_datetime_utc"):
-            fields["agreed_datetime_utc"] = str(event["start_time"])
-        _update(fixture["fixture_id"], fields)
-
-    try:
-        with open(SCOREBOARD_STATE_PATH, "r", encoding="utf-8") as file:
-            scoreboard = json.load(file)
-    except Exception:
-        scoreboard = {}
-    matches = scoreboard.get("pending_matches", {}) if isinstance(scoreboard, dict) else {}
-    for match in matches.values() if isinstance(matches, dict) else []:
-        if not isinstance(match, dict):
-            continue
-        try:
-            fixture = fixture_for_roles(
-                int(match["submitter_clan_role_id"]),
-                int(match["opponent_clan_role_id"]),
-                submitted_at=str(match.get("created_at") or ""),
-            )
-            if fixture is None:
-                continue
-            record_score(
-                fixture["fixture_id"],
-                match_id=str(match["match_id"]),
-                submitter_role_id=int(match["submitter_clan_role_id"]),
-                submitter_score=int(match["submitter_score"]),
-                opponent_score=int(match["opponent_score"]),
-                submitted_at=str(match.get("created_at") or _now_iso()),
-                status=str(match.get("status") or "pending"),
-            )
-            if match.get("confirmed_at"):
-                update_score_status(str(match["match_id"]), "confirmed", confirmed_at=str(match["confirmed_at"]))
-        except Exception:
-            continue
+    """Compatibility entry point; imports legacy data once, transactionally."""
+    migrate(DB_PATH)

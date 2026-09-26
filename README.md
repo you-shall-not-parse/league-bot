@@ -18,9 +18,41 @@ Fixture lifecycle:
 
 `scheduled -> planning/unorganised -> planned -> played_awaiting_score -> score_submitted -> confirmed/disputed`
 
-On first startup, the ledger is populated from `league_config.py` and existing
-organiser, event-history, and scoreboard JSON is migrated automatically. The
-migration is safe to run again on later restarts.
+All operational data now lives in `data/league.db`: fixtures, submissions, stats
+links, standings, organiser/streamer state and Discord board settings. The
+rulebook remains the separate `league_web/rulebook.json` file.
+
+Deploying this migration on Ubuntu:
+
+1. Stop the old bot **and** website processes through your existing process manager.
+2. Deploy the updated code, keeping the existing `data/` directory intact.
+3. Run:
+
+   ```bash
+   cd ~/league-bot
+   venv/bin/python -m league_storage
+   ```
+
+4. Check the active-season fixture/date/result counts and any `REVIEW unlinked`
+   lines (test matches may legitimately remain unlinked), then restart both
+   processes with the updated code. Run the website with
+   `venv/bin/python -m league_web.server` if it does not already have a service.
+
+The migration takes a SQLite backup at `data/league.before-unified-sql.db` before
+schema changes, imports legacy JSON exactly once, and leaves those source files
+untouched. Invalid JSON aborts the import rather than silently resetting data.
+Later restarts use SQL only and cannot re-import stale JSON over corrections or
+resets. Keep the original files as a migration backup; they are no longer live
+stores. Flexible Discord UI values are serialized in SQL state rows; matches and
+standings use typed SQL columns. No operational `.json` files are read/written
+once migration succeeds.
+
+The website reads database fixture IDs and stored dates for the active season,
+including rows with legacy IDs. It no longer reconstructs the public schedule
+from configuration IDs. The bot and website must use the same `LEAGUE_DATA_DIR`
+if overriding the default repository `data/` directory. Request handlers are
+read-only; startup performs initialization/migration. The website reports an
+error if its database is missing or unmigrated instead of inventing zero results.
 
 Admin recovery:
 
@@ -60,7 +92,7 @@ Back up the `data` directory as part of normal bot backups. Do not manually edit
 
 Score submissions require a Bifrost or CRCON match stats URL. After selecting the
 opponent and score, **Submit Result** opens the stats-link form. Submitting the
-form saves the URL with the match in `data/scoreboard.json`, posts opponent
+form saves the URL with the match in `data/league.db`, posts opponent
 validation, and sends a submission receipt to admin channel `1462544766775595123`.
 The receipt is acknowledgement of submission, not opponent confirmation.
 

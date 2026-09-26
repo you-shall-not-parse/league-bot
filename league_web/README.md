@@ -25,24 +25,28 @@ is already running, restart its process after deploying Python changes. Point
 the Cloudflare Tunnel at `http://127.0.0.1:7030` on that VPS. Its loopback address
 is separate from the Windows preview's address.
 
-The default data path is resolved from the installed repository, not the shell's
-working directory: on this VPS it is `/home/ubuntu/league-bot/data`. No data
-transfer to Windows is needed. The migration to SQL is currently partial:
-`league.db` stores fixtures and their score lifecycle; `scoreboard.json` still
-stores standings/admin adjustments, submission details and match stats links.
-Keep both files. The website reads the active configured Season 3 fixtures
-directly from those files, refreshing every minute.
+The default data path is resolved from the installed repository: on this VPS it
+is `/home/ubuntu/league-bot/data`. Both bot and website now use **only league.db**
+for operational state. Set the same `LEAGUE_DATA_DIR` on both processes if needed.
 
-The app reads `data/league.db` in SQLite read-only mode and `scoreboard.json`
-on each refresh. It never runs migrations or changes bot data. The configured
-fixtures remain visible without a database, clearly labelled as a configured
-schedule. Only current configured fixtures and clans are included, excluding
-test matches. Standings use the bot's `clan_stats` including admin corrections;
-when unavailable, they are calculated from confirmed ledger scores with the
-same ordering as the bot's active scoreboard renderer: maps won, difference, wins,
-fewer losses, then clan name descending for otherwise tied rows.
-Unconfirmed scores, role IDs, thread IDs, internal history and submitter details
-are not published. Stats links open only for confirmed matches.
+Before first deployment of the unified SQL version, stop both old processes,
+deploy the code, and run `venv/bin/python -m league_storage` from `~/league-bot`.
+Check the migration row counts, then restart both processes. The migration
+backs up the existing SQLite database as `league.before-unified-sql.db`, imports
+legacy JSON once and retains the originals untouched. Future restarts ignore
+those files. Do not run the old JSON-writing bot alongside the new version.
+See the repository README for the complete migration notes.
+
+The app reads fixtures, submissions, stats links, standings and season membership
+from SQLite in one read-only transaction per report. Startup can initialize the
+database; HTTP requests cannot change it. Fixture IDs and agreed dates come from
+the stored rows rather than regenerated configuration IDs. A missing/unmigrated
+database returns an error, not a fabricated empty season. Test matches have no
+public fixture and are excluded. Admin standings adjustments are retained.
+Ordering matches the bot: maps won, difference, wins, fewer losses, then clan name
+descending. Unconfirmed scores and private Discord IDs are not published.
+
+The rulebook remains `rulebook.json`; it is not stored in SQL.
 
 The calendar displays agreed kickoff times in UTC; unscheduled fixtures appear
 below it with their round windows. Played matches awaiting scores remain visible
@@ -107,3 +111,9 @@ Cloudflare references:
 ```powershell
 python -m unittest discover -s tests -p test_league_web.py
 ```
+
+Run the complete migration and bot regression suite with
+`python -m unittest discover -s tests`. With Playwright and Edge installed,
+`python tests/browser_sql_league.py` checks an isolated SQLite-backed season,
+including a confirmed result and dated calendar event, on desktop and mobile.
+It does not modify production data.
