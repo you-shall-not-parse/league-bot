@@ -5,8 +5,10 @@ import discord
 from discord.ext import commands
 from dotenv import load_dotenv
 import asyncio
+import signal
 
 from fixture_store import initialize as initialize_fixture_store
+from league_web.server import running_site
 
 load_dotenv()
 TOKEN = os.getenv("LEAGUE_BOT_TOKEN")
@@ -77,7 +79,7 @@ async def main():
     if not TOKEN:
         raise RuntimeError("LEAGUE_BOT_TOKEN is not set in your environment or .env file!")
     initialize_fixture_store()
-    async with bot:
+    async with running_site(os.environ.get("LEAGUE_DATA_DIR")), bot:
         await bot.load_extension("cogs.echo")
         await bot.load_extension("cogs.EmbedManager")
         await bot.load_extension("cogs.eventscalendar")
@@ -86,8 +88,28 @@ async def main():
         await bot.load_extension("cogs.scoreboard")
         await bot.start(TOKEN)
 
+
+async def run_service():
+    """Let systemd SIGTERM close Discord and HTTP before restarting."""
+    loop = asyncio.get_running_loop()
+    task = asyncio.current_task()
+    installed = False
+    try:
+        loop.add_signal_handler(signal.SIGTERM, task.cancel)
+        installed = True
+    except NotImplementedError:
+        pass  # Windows does not support asyncio Unix signal handlers.
+    try:
+        await main()
+    except asyncio.CancelledError:
+        logging.info("League service stopped (Discord bot and website).")
+    finally:
+        if installed:
+            loop.remove_signal_handler(signal.SIGTERM)
+
+
 if __name__ == "__main__":
     try:
-        asyncio.run(main())
+        asyncio.run(run_service())
     except KeyboardInterrupt:
         print("Bot shut down manually.")

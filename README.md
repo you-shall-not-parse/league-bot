@@ -6,7 +6,8 @@ Temporary Discord fetch failures keep the existing request instead of re-pinging
 streamers. Restart the bot after deploying this change.
 
 The public league website provides division standings, results, fixtures/calendar
-and a rulebook without login. Run `python -m league_web.server` and open
+and a rulebook without login. `main.py` starts both the bot and website under
+the existing `leaguebot.service`. The website listens on
 http://127.0.0.1:7030. See [website setup and Cloudflare entry protection](league_web/README.md)
 before publishing it.
 
@@ -34,9 +35,9 @@ Deploying this migration on Ubuntu:
    ```
 
 4. Check the active-season fixture/date/result counts and any `REVIEW unlinked`
-   lines (test matches may legitimately remain unlinked), then restart both
-   processes with the updated code. Run the website with
-   `venv/bin/python -m league_web.server` if it does not already have a service.
+   lines (test matches may legitimately remain unlinked), then restart
+   `leaguebot.service`. Its existing `main.py` entry point now starts both the
+   bot and website. Disable `leagueweb.service` first if you installed it.
 
 The migration takes a SQLite backup at `data/league.before-unified-sql.db` before
 schema changes, imports legacy JSON exactly once, and leaves those source files

@@ -1,4 +1,5 @@
 discord.py==2.3.2
+aiohttp>=3.13.3,<4
 python-dotenv==1.0.1
 pillow
 beautifulsoup4

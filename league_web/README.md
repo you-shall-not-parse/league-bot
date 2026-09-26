@@ -7,23 +7,45 @@ python -m pip install -r league_web/requirements.txt
 python -m league_web.server
 ```
 
-Open http://127.0.0.1:7030. No Discord login or bot token is needed. Run this
-as a separate process alongside the existing bot. `LEAGUE_WEB_PORT` changes
-the port; `LEAGUE_DATA_DIR` can point at the production bot's data directory.
-The service always binds to loopback.
+The production entry point is `main.py`: it starts both the Discord bot and the
+website in the same process, managed by the existing `leaguebot.service`.
+The standalone command above is for website-only development; do not run it
+alongside the combined service on the same port.
 
-On the Ubuntu VPS, run the website alongside the bot from the same checkout:
+### Existing Ubuntu systemd service
+
+Keep the existing unit with:
+
+```ini
+WorkingDirectory=/home/ubuntu/league-bot
+ExecStart=/home/ubuntu/league-bot/venv/bin/python /home/ubuntu/league-bot/main.py
+```
+
+After deploying the updated code:
 
 ```bash
 cd ~/league-bot
 venv/bin/python -m pip install -r league_web/requirements.txt
-venv/bin/python -m league_web.server
+sudo systemctl restart leaguebot.service
+sudo systemctl status leaguebot.service --no-pager
+curl --fail --silent --show-error http://127.0.0.1:7030/api/league
 ```
 
-Keep that command running through your existing process manager. If the website
-is already running, restart its process after deploying Python changes. Point
-the Cloudflare Tunnel at `http://127.0.0.1:7030` on that VPS. Its loopback address
-is separate from the Windows preview's address.
+If you previously installed the separate service, run
+`sudo systemctl disable --now leagueweb.service` before restarting leaguebot.
+No unit edit or daemon-reload is required when the existing ExecStart points to
+main.py. Systemd's pager may display that long line ending in `>`; inspect it
+without truncation using `sudo systemctl cat --no-pager leaguebot.service`.
+
+Look for `League website started at http://127.0.0.1:7030` in `bot_error.log`.
+The HTTP listener opens before Discord login; bind/startup failures stop the
+process rather than leaving an apparently healthy bot with no website. Both
+HTTP and Discord close on shutdown. SIGTERM from systemd is handled gracefully.
+
+`LEAGUE_WEB_PORT` changes the port, and `LEAGUE_DATA_DIR` selects the shared data
+directory. The website binds only to loopback. Point the Cloudflare Tunnel at
+`http://127.0.0.1:7030` on the VPS. In a Windows browser, `127.0.0.1` refers to
+Windows; use the public hostname or an SSH port forward to view the VPS.
 
 The default data path is resolved from the installed repository: on this VPS it
 is `/home/ubuntu/league-bot/data`. Both bot and website now use **only league.db**
@@ -31,7 +53,7 @@ for operational state. Set the same `LEAGUE_DATA_DIR` on both processes if neede
 
 Before first deployment of the unified SQL version, stop both old processes,
 deploy the code, and run `venv/bin/python -m league_storage` from `~/league-bot`.
-Check the migration row counts, then restart both processes. The migration
+Check the migration row counts, then start `leaguebot.service`. The migration
 backs up the existing SQLite database as `league.before-unified-sql.db`, imports
 legacy JSON once and retains the originals untouched. Future restarts ignore
 those files. Do not run the old JSON-writing bot alongside the new version.

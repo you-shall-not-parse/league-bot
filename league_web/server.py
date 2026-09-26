@@ -2,6 +2,7 @@
 import asyncio
 import logging
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from aiohttp import web
@@ -45,6 +46,21 @@ def create_app(data_dir=None):
     app.router.add_get("/api/league", snapshot)
     app.router.add_static("/assets/", STATIC, show_index=False)
     return app
+
+
+@asynccontextmanager
+async def running_site(data_dir=None, *, port=None):
+    """Own the HTTP listener for the lifetime of the Discord bot process."""
+    port = int(os.environ.get("LEAGUE_WEB_PORT", "7030")) if port is None else port
+    runner = web.AppRunner(create_app(data_dir))
+    try:
+        await runner.setup()
+        site = web.TCPSite(runner, "127.0.0.1", port)
+        await site.start()
+        logging.info("League website started at http://127.0.0.1:%s", port)
+        yield runner
+    finally:
+        await runner.cleanup()
 
 
 if __name__ == "__main__":
