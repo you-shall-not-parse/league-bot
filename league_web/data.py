@@ -4,7 +4,7 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
-from league_config import CLAN_ROLE_IDS, DIVISION_CLANS, DIVISION_FIXTURES_BY_ROUND, ROUND_WINDOWS
+from league_config import CLAN_ROLE_IDS, DIVISION_CLANS, DIVISION_FIXTURES_BY_ROUND, ROUND_WINDOWS, LEAGUE_NAME, SEASON_NUMBER
 from fixture_store import effective_status, fixture_id_for
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -76,6 +76,9 @@ def public_data(data_dir=None, rulebook_path=None):
         divisions.append({"name": name, "rows": rows})
     rules = Path(rulebook_path) if rulebook_path else ROOT / "league_web" / "rulebook.json"
     return {
+        "league_name": LEAGUE_NAME,
+        "season_number": SEASON_NUMBER,
+        "clan_logos": {clan: f"/assets/clans/{clan}.png" for clans in DIVISION_CLANS.values() for clan in clans},
         "updated_at": datetime.now(timezone.utc).isoformat(),
         "source": "live" if ledger else "configured_schedule",
         "season": min(start for start, _ in ROUND_WINDOWS.values()).year,

@@ -5,6 +5,9 @@ Keep common league constants here so multiple cogs stay in sync.
 
 from datetime import date
 
+LEAGUE_NAME = "The Allied Front"
+SEASON_NUMBER = 3
+
 # Guild scope for commands / lookups
 GUILD_ID: int = 1462382487622914079
 

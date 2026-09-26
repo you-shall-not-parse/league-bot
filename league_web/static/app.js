@@ -11,6 +11,8 @@ const labels = {confirmed:'Confirmed',disputed:'Under review',score_submitted:'A
 const played = (f) => ['confirmed','disputed','score_submitted','played_awaiting_score'].includes(f.status);
 const view = () => ['standings','results','fixtures','rulebook'].includes(location.hash.slice(1)) ? location.hash.slice(1) : 'standings';
 const heading = (eyebrow,title,copy) => `<div class="heading"><div><p class="eyebrow">${eyebrow}</p><h2>${title}</h2></div><p>${copy}</p></div>`;
+const clanLogo = (name) => data.clan_logos?.[name] ? `<img class="clan-logo" src="${escapeHTML(data.clan_logos[name])}" alt="" loading="lazy">` : '';
+const clan = (name) => `<span class="clan-identity">${clanLogo(name)}${escapeHTML(name)}</span>`;
 const empty = (text) => `<p class="empty">${text}</p>`;
 
 async function refresh() {
@@ -23,7 +25,7 @@ async function refresh() {
     const incoming = await response.json();
     data = incoming;
     $('#error').hidden = true;
-    $('#season').textContent = data.season;
+    $('#season').textContent = data.season_number;
     $('#sync').textContent = `${data.source === 'live' ? 'League data' : 'Configured schedule · live match data not connected'} · Updated ${time(data.updated_at)} UTC`;
     $('#metrics').innerHTML = [[data.divisions.length,'Divisions'],[data.divisions.reduce((n,d)=>n+d.rows.length,0),'Competing clans'],[data.fixtures.filter(f=>f.status==='confirmed').length,'Confirmed matches'],[data.fixtures.length,'Season fixtures']].map(([n,label])=>`<div class="metric"><strong>${n.toString().padStart(2,'0')}</strong><span>${label}</span></div>`).join('');
     render();
@@ -40,7 +42,7 @@ async function refresh() {
 
 function standings() {
   return heading('THE CAMPAIGN SO FAR','Division scoreboards','Two divisions. One campaign. Standings follow the league’s confirmed scores.') +
-    `<div class="division-grid">${data.divisions.map(d=>`<section class="division"><div class="division-head"><h3>${escapeHTML(d.name)}</h3><small>${d.rows.length} CLANS</small></div><div class="table-wrap"><table aria-label="${escapeHTML(d.name)} standings"><thead><tr>${['#','CLAN','MP','W','L','DIFF','SCORE'].map(h=>`<th scope="col">${h}</th>`).join('')}</tr></thead><tbody>${d.rows.map((r,i)=>`<tr><td>${String(i+1).padStart(2,'0')}</td><td><span class="team-badge" aria-hidden="true">${escapeHTML(r.name.slice(0,3))}</span>${escapeHTML(r.name)}</td><td>${r.played}</td><td>${r.w}</td><td>${r.l}</td><td>${r.difference > 0 ? '+' : ''}${r.difference}</td><td>${r.maps_for}</td></tr>`).join('')}</tbody></table></div><p class="table-note">Ranked by maps won, then map difference and match record.</p></section>`).join('')}</div><p class="legend">MP — matches played &nbsp; / &nbsp; W — wins &nbsp; / &nbsp; L — losses &nbsp; / &nbsp; DIFF — map difference &nbsp; / &nbsp; SCORE — maps won</p>`;
+    `<div class="division-grid">${data.divisions.map(d=>`<section class="division"><div class="division-head"><h3>${escapeHTML(d.name)}</h3><small>${d.rows.length} CLANS</small></div><div class="table-wrap"><table aria-label="${escapeHTML(d.name)} standings"><thead><tr>${['#','CLAN','MP','W','L','DIFF','SCORE'].map(h=>`<th scope="col">${h}</th>`).join('')}</tr></thead><tbody>${d.rows.map((r,i)=>`<tr><td>${String(i+1).padStart(2,'0')}</td><td>${clan(r.name)}</td><td>${r.played}</td><td>${r.w}</td><td>${r.l}</td><td>${r.difference > 0 ? '+' : ''}${r.difference}</td><td>${r.maps_for}</td></tr>`).join('')}</tbody></table></div><p class="table-note">Ranked by maps won, then map difference and match record.</p></section>`).join('')}</div><p class="legend">MP — matches played &nbsp; / &nbsp; W — wins &nbsp; / &nbsp; L — losses &nbsp; / &nbsp; DIFF — map difference &nbsp; / &nbsp; SCORE — maps won</p>`;
 }
 
 function filters() {
@@ -53,7 +55,7 @@ function filtered() {
 
 function matches(fixtures) {
   if (!fixtures.length) return empty(view()==='results'?'No played matches match these filters. Confirmed scores will appear here after validation.':'No fixtures match these filters.');
-  return `<div class="match-list">${fixtures.map(f=>`<article class="match"><div class="match-meta"><b>ROUND ${f.round}</b>${escapeHTML(f.division)}</div><div class="match-teams">${escapeHTML(f.a)} <span class="${f.status==='confirmed'?'score':'versus'}">${f.status==='confirmed'?`${f.score_a ?? '–'} : ${f.score_b ?? '–'}`:'vs'}</span> ${escapeHTML(f.b)}</div><div class="match-meta">${f.scheduled_at?`<b>${date(f.scheduled_at)} · ${time(f.scheduled_at)} UTC</b>`:`<b>${date(f.window_start)} – ${date(f.window_end)}</b>Round window · kickoff TBC`}</div><div class="match-state">${labels[f.status]||'Date to be agreed'}${f.stats_url?`<a href="${escapeHTML(f.stats_url)}" target="_blank" rel="noopener noreferrer">Match stats ↗</a>`:''}</div></article>`).join('')}</div>`;
+  return `<div class="match-list">${fixtures.map(f=>`<article class="match"><div class="match-meta"><b>ROUND ${f.round}</b>${escapeHTML(f.division)}</div><div class="match-teams">${clan(f.a)} <span class="${f.status==='confirmed'?'score':'versus'}">${f.status==='confirmed'?`${f.score_a ?? '–'} : ${f.score_b ?? '–'}`:'vs'}</span> ${clan(f.b)}</div><div class="match-meta">${f.scheduled_at?`<b>${date(f.scheduled_at)} · ${time(f.scheduled_at)} UTC</b>`:`<b>${date(f.window_start)} – ${date(f.window_end)}</b>Round window · kickoff TBC`}</div><div class="match-state">${labels[f.status]||'Date to be agreed'}${f.stats_url?`<a href="${escapeHTML(f.stats_url)}" target="_blank" rel="noopener noreferrer">Match stats ↗</a>`:''}</div></article>`).join('')}</div>`;
 }
 
 function calendar(fixtures) {

@@ -12,6 +12,27 @@ as a separate process alongside the existing bot. `LEAGUE_WEB_PORT` changes
 the port; `LEAGUE_DATA_DIR` can point at the production bot's data directory.
 The service always binds to loopback.
 
+On the Ubuntu VPS, run the website alongside the bot from the same checkout:
+
+```bash
+cd ~/league-bot
+venv/bin/python -m pip install -r league_web/requirements.txt
+venv/bin/python -m league_web.server
+```
+
+Keep that command running through your existing process manager. If the website
+is already running, restart its process after deploying Python changes. Point
+the Cloudflare Tunnel at `http://127.0.0.1:7030` on that VPS. Its loopback address
+is separate from the Windows preview's address.
+
+The default data path is resolved from the installed repository, not the shell's
+working directory: on this VPS it is `/home/ubuntu/league-bot/data`. No data
+transfer to Windows is needed. The migration to SQL is currently partial:
+`league.db` stores fixtures and their score lifecycle; `scoreboard.json` still
+stores standings/admin adjustments, submission details and match stats links.
+Keep both files. The website reads the active configured Season 3 fixtures
+directly from those files, refreshing every minute.
+
 The app reads `data/league.db` in SQLite read-only mode and `scoreboard.json`
 on each refresh. It never runs migrations or changes bot data. The configured
 fixtures remain visible without a database, clearly labelled as a configured
@@ -29,10 +50,12 @@ in Results. Browser data refreshes every minute while the page is visible.
 
 ## Branding and rules
 
-`static/index.html` contains the provisional HLL League branding.
+The site is branded The Allied Front, Season 3. `league_config.py` provides the
+league name and season number in the public report.
 `static/campaign.webp` is the background reused from the supplied reference repo.
-`static/hero.png` uses the supplied soldier/reflection artwork, with the original
-kept unchanged in `data/`.
+`static/THE_ALLIED_FRONT_SEASON_3.png` is the supplied league logo. Clan logos in
+`static/clans/` are copied from the bot's `cogs/clan_logos/` assets and appear in
+standings and fixture/result rows.
 
 Edit `rulebook.json` to publish approved rules. Content is rendered as plain text:
 

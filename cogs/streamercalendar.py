@@ -778,6 +778,10 @@ async def maybe_post_streamer_request(
 	event_url: str,
 ) -> None:
 	"""Create/update the current streamer request and refresh the board."""
+	# Startup re-syncs historical organiser threads too. Do not ping streamers
+	# for a request that the board's retention cleanup would immediately delete.
+	if _is_request_expired({"datetime_utc": datetime_utc_iso}):
+		return
 	if not (isinstance(STREAMER_REQUESTS_CHANNEL_ID, int) and STREAMER_REQUESTS_CHANNEL_ID > 0):
 		return
 	requests_channel = guild.get_channel(STREAMER_REQUESTS_CHANNEL_ID)
@@ -836,8 +840,12 @@ async def maybe_post_streamer_request(
 	if isinstance(msg_id, int) and msg_id > 0:
 		try:
 			msg = await requests_channel.fetch_message(msg_id)
-		except Exception:
+		except discord.NotFound:
 			msg = None
+		except Exception:
+			# A permission/network failure does not mean the request was deleted.
+			# Keep its ID and let the next refresh retry, without another role ping.
+			return
 
 	if msg is None:
 		content = None

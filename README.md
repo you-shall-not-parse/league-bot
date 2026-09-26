@@ -1,5 +1,10 @@
 # League bot
 
+Streamer requests for fixtures more than eight hours past kickoff are skipped
+during restart sync, rather than posted and immediately removed by cleanup.
+Temporary Discord fetch failures keep the existing request instead of re-pinging
+streamers. Restart the bot after deploying this change.
+
 The public league website provides division standings, results, fixtures/calendar
 and a rulebook without login. Run `python -m league_web.server` and open
 http://127.0.0.1:7030. See [website setup and Cloudflare entry protection](league_web/README.md)
