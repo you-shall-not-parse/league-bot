@@ -57,6 +57,12 @@ async def main(base_url="http://127.0.0.1:7030"):
             await expect(page.locator("#content")).to_contain_text("No played matches")
         await page.locator('.tabs a[href="#rulebook"]').click()
         await expect(page.locator("#content")).to_contain_text("not been published")
+        await page.locator('.tabs a[href="#trophy-room"]').click()
+        await expect(page.locator('.trophy-card')).to_have_count(2)
+        await expect(page.locator('.trophy-card').first).to_contain_text('RMC')
+        await expect(page.locator('.trophy-card').last).to_contain_text('TBC')
+        await page.reload(wait_until='networkidle')
+        await expect(page.locator('.trophy-card')).to_have_count(2)
         await page.set_viewport_size({"width": 390, "height": 844})
         await page.locator('.tabs a[href="#standings"]').click()
         await expect(page.locator("table")).to_have_count(2)
@@ -83,6 +89,7 @@ async def main(base_url="http://127.0.0.1:7030"):
                         report['clan_logos'][winner])
             await page.screenshot(path=str(output / f'preview-results-{width}.png'), full_page=True)
             await page.locator('.tabs a[href="#fixtures"]').click()
+            await page.locator('#calendar-view').click()
             await page.locator('#today').click()
             assert await page.locator('.calendar').evaluate('(el) => el.scrollWidth <= el.clientWidth')
             assert await page.evaluate('document.documentElement.scrollWidth <= window.innerWidth')
@@ -96,7 +103,7 @@ async def main(base_url="http://127.0.0.1:7030"):
         await page.locator("#error").wait_for(state="visible")
         assert await page.locator("table").count() == 2
         assert not errors, errors
-        print("PASS: desktop/mobile, four tabs, filters, calendar navigation, refresh failure; no JS errors.")
+        print("PASS: desktop/mobile, five tabs, filters, calendar navigation, refresh failure; no JS errors.")
         await browser.close()
 
 

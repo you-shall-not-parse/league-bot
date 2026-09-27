@@ -9,7 +9,7 @@ let division = '', round = '', query = '', calendarView = false;
 let month = new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), 1));
 const labels = {confirmed:'Confirmed',disputed:'Under review',score_submitted:'Awaiting confirmation',played_awaiting_score:'Awaiting score',event_cancelled:'Being rescheduled',missed:'Date not confirmed',unorganised:'Date to be agreed',planning:'Planning',planned:'Scheduled',scheduled:'Date to be agreed'};
 const played = (f) => ['confirmed','disputed','score_submitted','played_awaiting_score'].includes(f.status);
-const view = () => ['standings','results','fixtures','rulebook'].includes(location.hash.slice(1)) ? location.hash.slice(1) : 'standings';
+const view = () => ['standings','results','fixtures','rulebook','trophy-room'].includes(location.hash.slice(1)) ? location.hash.slice(1) : 'standings';
 const heading = (eyebrow,title,copy) => `<div class="heading"><div><p class="eyebrow">${eyebrow}</p><h2>${title}</h2></div><p>${copy}</p></div>`;
 const clanLogo = (name) => data.clan_logos?.[name] ? `<img class="clan-logo" src="${escapeHTML(data.clan_logos[name])}" alt="" loading="lazy">` : '';
 const clan = (name) => `<span class="clan-identity">${clanLogo(name)}${escapeHTML(name)}</span>`;
@@ -88,6 +88,14 @@ function fixturesBody() {
   return calendarView ? calendar(fixtures) : matches(fixtures.filter(f=>!played(f)));
 }
 
+function trophyRoom() {
+  const trophy = '<svg class="trophy-icon" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M14 6h20v12a10 10 0 0 1-20 0V6ZM14 10H6v5a10 10 0 0 0 10 10m18-15h8v5a10 10 0 0 1-10 10M24 28v10m-8 4h16m-12-4h8v4h-8z"/></svg>';
+  return heading('LEAGUE HONOURS','Trophy Room','The champions of The Allied Front.') + `<div class="trophy-grid">
+    <article class="trophy-card">${trophy}<p class="eyebrow">SEASON 1</p><h3>RMC</h3><div class="trophy-clan">${clanLogo('RMC')}</div><p class="trophy-title">Champions</p><p class="trophy-note">One division. One winner.</p></article>
+    <article class="trophy-card trophy-pending">${trophy}<p class="eyebrow">SEASON 2</p><h3>TBC</h3><p class="trophy-title">Winner to be confirmed</p></article>
+  </div>`;
+}
+
 function rulebook() {
   const rules = data.rulebook;
   return heading('THE RULES OF ENGAGEMENT',escapeHTML(rules.title),escapeHTML(rules.version)) + `<div class="rulebook">${rules.published ? rules.sections.map((s,i)=>`<details ${i===0?'open':''}><summary>${String(i+1).padStart(2,'0')} &nbsp; ${escapeHTML(s.title)}</summary><p>${escapeHTML(s.body)}</p></details>`).join('') : empty('The official rulebook has not been published here yet. League organisers will provide the approved rules before publication.')}</div>`;
@@ -117,6 +125,7 @@ function render() {
   document.querySelectorAll('.tabs a').forEach(a=>{const active = a.hash===`#${current}`;a.classList.toggle('active',active);if(active)a.setAttribute('aria-current','page');else a.removeAttribute('aria-current');});
   if (!data) return;
   if (current==='standings') $('#content').innerHTML=standings();
+  else if (current==='trophy-room') $('#content').innerHTML=trophyRoom();
   else if (current==='rulebook') $('#content').innerHTML=rulebook();
   else {
     $('#content').innerHTML = (current==='results'?heading('AFTER THE ACTION','Results / matches played','Confirmed results and played fixtures awaiting score validation.'):heading('THE ROAD AHEAD','Fixtures & calendar','Every round, every matchup. All kickoff times are shown in UTC.')) + filters() + '<div id="match-body"></div>';
