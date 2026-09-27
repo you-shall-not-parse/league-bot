@@ -128,7 +128,7 @@ function render() {
   else if (current==='trophy-room') $('#content').innerHTML=trophyRoom();
   else if (current==='rulebook') $('#content').innerHTML=rulebook();
   else {
-    $('#content').innerHTML = (current==='results'?heading('AFTER THE ACTION','Results / matches played','Confirmed results and played fixtures awaiting score validation.'):heading('THE ROAD AHEAD','Fixtures & calendar','Every round, every matchup. All kickoff times are shown in UTC.')) + filters() + '<div id="match-body"></div>';
+    $('#content').innerHTML = (current==='results'?heading('AFTER THE ACTION','Results','Confirmed results and played fixtures awaiting score validation.'):heading('THE ROAD AHEAD','Fixtures & calendar','Every round, every matchup. All kickoff times are shown in UTC.')) + filters() + '<div id="match-body"></div>';
     renderBody();
     $('#division').onchange = e=>{division=e.target.value;renderBody();};
     $('#round').onchange = e=>{round=e.target.value;renderBody();};
