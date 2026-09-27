@@ -25,7 +25,6 @@ async function refresh() {
     const incoming = await response.json();
     data = incoming;
     $('#error').hidden = true;
-    $('#season').textContent = data.season_number;
     $('#sync').textContent = `${data.source === 'live' ? 'League data' : 'Configured schedule · live match data not connected'} · Updated ${time(data.updated_at)} UTC`;
     $('#metrics').innerHTML = [[data.divisions.length,'Divisions'],[data.divisions.reduce((n,d)=>n+d.rows.length,0),'Competing clans'],[data.fixtures.filter(f=>f.status==='confirmed').length,'Confirmed matches'],[data.fixtures.length,'Season fixtures']].map(([n,label])=>`<div class="metric"><strong>${n.toString().padStart(2,'0')}</strong><span>${label}</span></div>`).join('');
     render();

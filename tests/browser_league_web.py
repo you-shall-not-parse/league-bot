@@ -16,10 +16,10 @@ async def main(base_url="http://127.0.0.1:7030"):
         report = await (await page.request.get(base_url.rstrip("/") + "/api/league")).json()
         await page.locator("table").first.wait_for()
         assert await page.locator("tbody tr").count() == 10
-        await expect(page).to_have_title("The Allied Front — Season 3")
+        await expect(page).to_have_title("The Allied Front")
         await expect(page.locator("tbody .clan-logo")).to_have_count(10)
         await page.wait_for_function("Array.from(document.querySelectorAll('.league-logo, .clan-logo')).every(img => img.complete && img.naturalWidth > 0)")
-        for removed in ("PUBLIC LEAGUE BOARD", "COMMUNITY COMPETITION", "Follow the campaign.", "Independent community league"):
+        for removed in ("SEASON 3", "Season 3", "PUBLIC LEAGUE BOARD", "COMMUNITY COMPETITION", "Follow the campaign.", "Independent community league"):
             await expect(page.locator("body")).not_to_contain_text(removed)
         await page.screenshot(path=str(output / "preview-desktop.png"), full_page=True)
         await page.locator('.tabs a[href="#fixtures"]').click()

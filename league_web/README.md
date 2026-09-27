@@ -76,10 +76,11 @@ in Results. Browser data refreshes every minute while the page is visible.
 
 ## Branding and rules
 
-The site is branded The Allied Front, Season 3. `league_config.py` provides the
+The site is branded The Allied Front without a visible season number. `league_config.py` provides the
 league name and season number in the public report.
-`static/campaign.webp` is the background reused from the supplied reference repo.
-`static/THE_ALLIED_FRONT_SEASON_3.png` is the supplied league logo. Clan logos in
+`static/league-logo.png` uses `ChatGPT Image Sep 20, 2026, 05_45_39 PM.png`.
+`static/hero.png` uses `file_00000000f85082109a2a51b3e46eaa15.png`.
+The theme uses red `#C02B10` with lighter red for readable small text. Clan logos in
 `static/clans/` are copied from the bot's `cogs/clan_logos/` assets and appear in
 standings and fixture/result rows.
 
