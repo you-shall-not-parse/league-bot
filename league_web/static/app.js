@@ -85,7 +85,7 @@ function resultsBody() {
 
 function fixturesBody() {
   const fixtures = filtered().sort((a,b)=>a.round-b.round||(a.scheduled_at||a.window_end).localeCompare(b.scheduled_at||b.window_end));
-  return calendarView ? calendar(fixtures) : matches(fixtures);
+  return calendarView ? calendar(fixtures) : matches(fixtures.filter(f=>!played(f)));
 }
 
 function rulebook() {
