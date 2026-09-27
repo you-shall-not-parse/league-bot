@@ -26,7 +26,6 @@ async function refresh() {
     data = incoming;
     $('#error').hidden = true;
     $('#sync').textContent = `${data.source === 'live' ? 'League data' : 'Configured schedule · live match data not connected'} · Updated ${time(data.updated_at)} UTC`;
-    $('#metrics').innerHTML = [[data.divisions.length,'Divisions'],[data.divisions.reduce((n,d)=>n+d.rows.length,0),'Competing clans'],[data.fixtures.filter(f=>f.status==='confirmed').length,'Confirmed matches'],[data.fixtures.length,'Season fixtures']].map(([n,label])=>`<div class="metric"><strong>${n.toString().padStart(2,'0')}</strong><span>${label}</span></div>`).join('');
     render();
   } catch {
     $('#error').hidden = false;
@@ -52,9 +51,15 @@ function filtered() {
   return data.fixtures.filter(f=>(!division||f.division===division)&&(!round||String(f.round)===round)&&(!query||`${f.a} ${f.b}`.toLowerCase().includes(query.toLowerCase().trim())));
 }
 
+function winnerArt(f) {
+  if (f.status !== 'confirmed' || f.score_a == null || f.score_b == null || Number(f.score_a) === Number(f.score_b)) return '';
+  const winner = Number(f.score_a) > Number(f.score_b) ? f.a : f.b;
+  return data.clan_logos?.[winner] ? `<img class="winner-art" src="${escapeHTML(data.clan_logos[winner])}" alt="" loading="lazy" aria-hidden="true">` : '';
+}
+
 function matches(fixtures) {
   if (!fixtures.length) return empty(view()==='results'?'No played matches match these filters. Confirmed scores will appear here after validation.':'No fixtures match these filters.');
-  return `<div class="match-list">${fixtures.map(f=>`<article class="match"><div class="match-meta"><b>ROUND ${f.round}</b>${escapeHTML(f.division)}</div><div class="match-teams">${clan(f.a)} <span class="${f.status==='confirmed'?'score':'versus'}">${f.status==='confirmed'?`${f.score_a ?? '–'} : ${f.score_b ?? '–'}`:'vs'}</span> ${clan(f.b)}</div><div class="match-meta">${f.scheduled_at?`<b>${date(f.scheduled_at)} · ${time(f.scheduled_at)} UTC</b>`:`<b>${date(f.window_start)} – ${date(f.window_end)}</b>Round window · kickoff TBC`}</div><div class="match-state">${labels[f.status]||'Date to be agreed'}${f.stats_url?`<a href="${escapeHTML(f.stats_url)}" target="_blank" rel="noopener noreferrer">Match stats ↗</a>`:''}</div></article>`).join('')}</div>`;
+  return `<div class="match-list">${fixtures.map(f=>`<article class="match">${winnerArt(f)}<div class="match-meta"><b>ROUND ${f.round}</b>${escapeHTML(f.division)}</div><div class="match-teams">${clan(f.a)} <span class="${f.status==='confirmed'?'score':'versus'}">${f.status==='confirmed'?`${f.score_a ?? '–'} : ${f.score_b ?? '–'}`:'vs'}</span> ${clan(f.b)}</div><div class="match-meta">${f.scheduled_at?`<b>${date(f.scheduled_at)} · ${time(f.scheduled_at)} UTC</b>`:`<b>${date(f.window_start)} – ${date(f.window_end)}</b>Round window · kickoff TBC`}</div><div class="match-state">${labels[f.status]||'Date to be agreed'}${f.stats_url?`<a href="${escapeHTML(f.stats_url)}" target="_blank" rel="noopener noreferrer">Match stats ↗</a>`:''}</div></article>`).join('')}</div>`;
 }
 
 function calendar(fixtures) {
@@ -67,10 +72,10 @@ function calendar(fixtures) {
     day.setUTCDate(start.getUTCDate()+i);
     const iso = day.toISOString().slice(0,10);
     const events = fixtures.filter(f=>f.scheduled_at && new Date(f.scheduled_at).toISOString().slice(0,10)===iso);
-    cells += `<div class="day ${day.getUTCMonth()!==month.getUTCMonth()?'outside':''} ${iso===today?'today':''}" aria-label="${fmt(day,{day:'numeric',month:'long',year:'numeric'})}">${day.getUTCDate()}${events.map(f=>`<span class="calendar-event">${escapeHTML(f.a)} vs ${escapeHTML(f.b)}<small>${time(f.scheduled_at)} UTC · R${f.round}</small><small>${labels[f.status]||'Scheduled'}</small></span>`).join('')}</div>`;
+    cells += `<div class="day ${day.getUTCMonth()!==month.getUTCMonth()?'outside':''} ${iso===today?'today':''}" aria-label="${fmt(day,{day:'numeric',month:'long',year:'numeric'})}"><span class="day-number">${day.getUTCDate()}</span><div class="day-events">${events.map(f=>`<button type="button" class="calendar-event" data-date="${iso}" aria-label="${escapeHTML(f.a)} vs ${escapeHTML(f.b)}, ${time(f.scheduled_at)} UTC, ${labels[f.status]||'Scheduled'}"><time>${time(f.scheduled_at)}</time><span>${escapeHTML(f.a)} vs ${escapeHTML(f.b)}</span></button>`).join('')}</div></div>`;
   }
   const unscheduled = fixtures.filter(f=>!f.scheduled_at);
-  return `<div class="calendar-bar"><h3>${fmt(month,{month:'long',year:'numeric'})}</h3><div><button id="previous" aria-label="Previous month">←</button><button id="today">Today</button><button id="next" aria-label="Next month">→</button></div></div><div class="calendar-scroll"><div class="calendar">${cells}</div></div><p class="calendar-note">All times UTC. Only agreed kickoff times appear on the calendar. Round windows are not kickoff dates.</p>${unscheduled.length?`<h3>Kickoff to be confirmed <small>(${unscheduled.length})</small></h3><p class="calendar-note">These fixtures remain in their allocated round window.</p>${matches(unscheduled)}`:''}`;
+  return `<div class="calendar-bar"><h3>${fmt(month,{month:'long',year:'numeric'})}</h3><div><button id="previous" aria-label="Previous month">←</button><button id="today">Today</button><button id="next" aria-label="Next month">→</button></div></div><div class="calendar-scroll"><div class="calendar">${cells}</div></div><div id="calendar-detail" aria-live="polite"></div><p class="calendar-note">Select a match to see the full details. All times UTC. Only agreed kickoff times appear on the calendar. Round windows are not kickoff dates.</p>${unscheduled.length?`<h3>Kickoff to be confirmed <small>(${unscheduled.length})</small></h3><p class="calendar-note">These fixtures remain in their allocated round window.</p>${matches(unscheduled)}`:''}`;
 }
 
 function resultsBody() {
@@ -90,6 +95,13 @@ function rulebook() {
 
 function bindCalendar() {
   if (!$('#previous')) return;
+  document.querySelectorAll('.calendar-event').forEach(button => {
+    button.onclick = () => {
+      const selected = filtered().filter(f => f.scheduled_at && new Date(f.scheduled_at).toISOString().slice(0,10) === button.dataset.date);
+      $('#calendar-detail').innerHTML = `<h3>${fmt(button.dataset.date,{day:'numeric',month:'long'})}</h3>` + matches(selected);
+      document.querySelectorAll('.calendar-event').forEach(event => event.setAttribute('aria-pressed', String(event.dataset.date === button.dataset.date)));
+    };
+  });
   $('#previous').onclick = ()=>{month.setUTCMonth(month.getUTCMonth()-1);renderBody();};
   $('#next').onclick = ()=>{month.setUTCMonth(month.getUTCMonth()+1);renderBody();};
   $('#today').onclick = ()=>{const now=new Date();month=new Date(Date.UTC(now.getUTCFullYear(),now.getUTCMonth(),1));renderBody();};

@@ -58,6 +58,35 @@ async def main(base_url="http://127.0.0.1:7030"):
         await expect(page.locator("table")).to_have_count(2)
         await page.screenshot(path=str(output / "preview-mobile.png"), full_page=True)
         assert await page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
+        await expect(page.locator('#metrics')).to_have_count(0)
+        await expect(page.locator('.hero .eyebrow')).to_have_count(0)
+        await expect(page.locator('.brand small')).to_have_text('HELL LET LOOSE CONSOLE COMPETITION')
+        for width in (390, 320):
+            await page.set_viewport_size({"width": width, "height": 844})
+            await page.locator('.tabs a[href="#results"]').click()
+            for card in await page.locator('.match-teams').all():
+                boxes = [await item.bounding_box() for item in await card.locator(':scope > span').all()]
+                centers = [b['y'] + b['height']/2 for b in boxes]
+                assert max(centers) - min(centers) < 2, boxes
+                assert await card.evaluate('(el) => el.scrollWidth <= el.clientWidth')
+            winners = [f['a'] if f['score_a'] > f['score_b'] else f['b'] for f in results
+                       if f['status'] == 'confirmed' and f.get('score_a') is not None
+                       and f.get('score_b') is not None and f['score_a'] != f['score_b']]
+            for winner in winners:
+                if winner in report.get('clan_logos', {}):
+                    assert await page.locator('.winner-art').evaluate_all(
+                        '(images, src) => images.some(img => img.getAttribute("src") === src)',
+                        report['clan_logos'][winner])
+            await page.screenshot(path=str(output / f'preview-results-{width}.png'), full_page=True)
+            await page.locator('.tabs a[href="#fixtures"]').click()
+            await page.locator('#today').click()
+            assert await page.locator('.calendar').evaluate('(el) => el.scrollWidth <= el.clientWidth')
+            assert await page.evaluate('document.documentElement.scrollWidth <= window.innerWidth')
+            if dated:
+                await page.locator('.calendar-event').first.click()
+                await expect(page.locator('#calendar-detail .match')).to_have_count(len(dated))
+            await page.screenshot(path=str(output / f'preview-calendar-{width}.png'), full_page=True)
+        await page.locator('.tabs a[href="#standings"]').click()
         await page.route("**/api/league", lambda route: route.fulfill(status=503, json={"error": "Unavailable"}))
         await page.locator("#refresh").click()
         await page.locator("#error").wait_for(state="visible")

@@ -4,3 +4,48 @@
 /* Lighter red keeps small text readable against charcoal panels. */
 .eyebrow,.tabs a.active,td:last-child,.score,.match-state a{color:#ff8a76}
 @media(max-width:900px){h1{font-size:48px}}@media(max-width:600px){.hero{min-height:250px}.hero-text{max-width:100%}.hero-art{opacity:.32}.league-logo{width:50px;height:50px}.brand{font-size:22px}h1{font-size:44px}.clan-identity{gap:6px}.clan-logo{width:25px;height:25px}}
+
+/* Match cards keep both clans and the score together at every viewport size. */
+.match{position:relative;isolation:isolate;overflow:hidden;grid-template-columns:120px minmax(0,1fr) 180px 130px}
+.match>div{position:relative;z-index:1;min-width:0}
+.winner-art{position:absolute;z-index:0;right:5%;top:50%;transform:translateY(-50%);width:230px;height:230px;object-fit:contain;opacity:.10;pointer-events:none}
+.match-teams{display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);gap:12px}
+.match-teams .clan-identity{min-width:0;white-space:nowrap}
+.match-teams .clan-identity:last-child{justify-content:flex-end}
+.calendar{min-width:0;width:100%}
+.day{min-width:0;min-height:112px;padding:7px}
+.day-number{display:block;margin-bottom:7px;color:var(--muted);font-size:12px}
+.day.today .day-number{color:#ff8a76}
+.day-events{display:grid;gap:4px}
+.calendar-event{width:100%;min-width:0;margin:0;padding:5px 6px;text-align:left;border:0;border-left:2px solid var(--accent);border-radius:0;background:#C02B1015;color:var(--ink)}
+.calendar-event:hover,.calendar-event[aria-pressed=true]{background:#C02B1033}
+.calendar-event time,.calendar-event span{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.calendar-event time{font-size:9px;color:#ff8a76}
+.calendar-event span{font-size:10px}
+#calendar-detail:not(:empty){margin-top:22px}
+#calendar-detail h3{margin-bottom:12px}
+@media(max-width:1000px){.match{grid-template-columns:110px minmax(0,1fr)}.match-state{grid-column:auto;text-align:right}}
+@media(max-width:600px){
+.brand small{font-size:7px;letter-spacing:.08em}
+.match{grid-template-columns:minmax(0,1fr) auto;padding:16px;gap:14px 8px}
+.match-meta:first-of-type{grid-column:1/-1}
+.match-teams{grid-column:1/-1;gap:8px;font-size:12px}
+.match-teams .clan-identity{gap:6px}
+.match-teams .clan-logo{width:23px;height:23px}
+.match .match-meta{grid-column:auto;font-size:9px}
+.match .match-meta b{font-size:11px}
+.match .match-meta:first-of-type{grid-column:1/-1}
+.match-state{grid-column:auto;font-size:9px}
+.score{font-size:22px}
+.winner-art{right:0;width:180px;height:180px}
+.calendar-scroll{overflow:visible}
+.weekday{padding:7px 1px;font-size:8px;letter-spacing:0}
+.day{min-height:72px;padding:3px}
+.day-number{margin-bottom:3px;font-size:11px}
+.day-events{gap:3px}
+.calendar-event{padding:3px 1px;min-height:34px}
+.calendar-event time{font-size:8px;text-align:center}
+.calendar-event span{font-size:8px;line-height:1.2;white-space:normal;overflow-wrap:anywhere}
+.calendar-bar{gap:6px}.calendar-bar button{padding:7px 10px}
+.filters label{max-width:100%}.filters input{min-width:0;width:100%}
+}
