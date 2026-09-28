@@ -100,7 +100,8 @@ function trophyRoom() {
   const trophy = '<svg class="trophy-icon" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M14 6h20v12a10 10 0 0 1-20 0V6ZM14 10H6v5a10 10 0 0 0 10 10m18-15h8v5a10 10 0 0 1-10 10M24 28v10m-8 4h16m-12-4h8v4h-8z"/></svg>';
   return heading('LEAGUE HONOURS','Trophy Room','The champions of The Allied Front.') + `<div class="trophy-grid">
     <article class="trophy-card">${trophy}<p class="eyebrow">SEASON 1</p><h3>RMC</h3><div class="trophy-clan">${clanLogo('RMC')}</div><p class="trophy-title">Champions</p><p class="trophy-note">One division. One winner.</p></article>
-    <article class="trophy-card trophy-pending">${trophy}<p class="eyebrow">SEASON 2</p><h3>TBC</h3><p class="trophy-title">Winner to be confirmed</p></article>
+    <article class="trophy-card">${trophy}<p class="eyebrow">SEASON 2</p><h3>HG</h3><div class="trophy-clan">${clanLogo('HG')}</div><p class="trophy-title">Axis Division Champions</p></article>
+    <article class="trophy-card">${trophy}<p class="eyebrow">SEASON 2</p><h3>7PD</h3><div class="trophy-clan">${clanLogo('7PD')}</div><p class="trophy-title">Allied Division Champions</p></article>
   </div>`;
 }
 
