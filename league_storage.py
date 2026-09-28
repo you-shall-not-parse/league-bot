@@ -203,6 +203,9 @@ def save_scoreboard(identifier, state):
     with connect(Path(identifier).parent / "league.db") as db:
         schema(db)
         _save_scoreboard(db, state)
+        # Queue private audit revisions in the same transaction as URL/correction saves.
+        from player_audit.identity import reconcile
+        reconcile(db, SEASON_KEY)
 
 
 def read_scoreboard(db):

@@ -60,7 +60,7 @@ def rollover(path, *, apply=False):
         for table in ('fixtures', 'matches', 'standings', 'season_clans'):
             db.execute(f'UPDATE {table} SET season_key=? WHERE season_key=?', (ARCHIVE_KEY, SEASON_KEY))
         db.execute('UPDATE seasons SET season_key=?,number=2 WHERE season_key=?', (ARCHIVE_KEY, SEASON_KEY))
-        for table in ('player_stat_imports', 'player_match_stats'):
+        for table in ('player_stat_imports', 'player_match_stats', 'audit_matches', 'audit_appearances', 'audit_aliases', 'audit_alerts'):
             if db.execute('SELECT 1 FROM sqlite_master WHERE name=?', (table,)).fetchone():
                 db.execute(f'UPDATE {table} SET season=? WHERE season=?', (ARCHIVE_KEY, SEASON_KEY))
         old_namespace = 'scoreboard:' + SEASON_KEY
