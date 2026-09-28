@@ -57,6 +57,13 @@ async def main(base_url="http://127.0.0.1:7030"):
             await expect(page.locator("#content")).to_contain_text("No played matches")
         await page.locator('.tabs a[href="#rulebook"]').click()
         await expect(page.locator("#content")).to_contain_text("not been published")
+        await page.locator('.tabs a[href="#leaderboard"]').click()
+        await expect(page.locator('h2')).to_have_text('Player Leaderboard')
+        board = report.get('player_leaderboard', {})
+        if board.get('rows'):
+            await expect(page.locator('.player-table tbody tr')).to_have_count(len(board['rows']))
+            await expect(page.locator('.player-table tbody tr').first).to_contain_text(board['rows'][0]['name'])
+            await expect(page.locator('.leaderboard-coverage')).to_contain_text(f"{board['imported']} of {board['confirmed']}")
         await page.locator('.tabs a[href="#trophy-room"]').click()
         await expect(page.locator('.trophy-card')).to_have_count(2)
         await expect(page.locator('.trophy-card').first).to_contain_text('RMC')
@@ -97,13 +104,16 @@ async def main(base_url="http://127.0.0.1:7030"):
                 await page.locator('.calendar-event').first.click()
                 await expect(page.locator('#calendar-detail .match')).to_have_count(len(dated))
             await page.screenshot(path=str(output / f'preview-calendar-{width}.png'), full_page=True)
+        await page.locator('.tabs a[href="#leaderboard"]').click()
+        assert await page.evaluate('document.documentElement.scrollWidth <= window.innerWidth')
+        await page.screenshot(path=str(output / 'preview-player-leaderboard-mobile.png'), full_page=True)
         await page.locator('.tabs a[href="#standings"]').click()
         await page.route("**/api/league", lambda route: route.fulfill(status=503, json={"error": "Unavailable"}))
         await page.locator("#refresh").click()
         await page.locator("#error").wait_for(state="visible")
         assert await page.locator("table").count() == 2
         assert not errors, errors
-        print("PASS: desktop/mobile, five tabs, filters, calendar navigation, refresh failure; no JS errors.")
+        print("PASS: desktop/mobile, six tabs, filters, calendar navigation, refresh failure; no JS errors.")
         await browser.close()
 
 

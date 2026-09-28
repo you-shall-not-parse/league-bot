@@ -16,6 +16,7 @@ import fixture_store
 from league_storage import load_scoreboard, save_scoreboard
 from league_config import CLAN_ROLE_IDS
 from league_web.server import create_app
+from league_web.player_stats import source_url, save_import
 
 
 async def main():
@@ -29,10 +30,12 @@ async def main():
             "match_id": "browser-test", "submitter_clan_role_id": CLAN_ROLE_IDS["OFIN"],
             "opponent_clan_role_id": CLAN_ROLE_IDS["HG"], "submitter_score": 3,
             "opponent_score": 2, "status": "confirmed", "created_at": "2026-07-30T19:00:00+00:00",
-            "stats_link": "https://example.com/stats/browser-test"}}
+            "stats_link": "https://stats.example.com/games/1012"}}
         state["clan_stats"][str(CLAN_ROLE_IDS["OFIN"])].update(w=1, played=1, maps_for=3, maps_against=2)
         state["clan_stats"][str(CLAN_ROLE_IDS["HG"])].update(l=1, played=1, maps_for=2, maps_against=3)
         save_scoreboard(identifier, state)
+        save_import(Path(directory) / 'league.db', source_url('https://stats.example.com/games/1012'),
+                    [('player-one', '<Test Player>', 109, 27, 5012), ('player-two', 'Second Player', 77, 0, 5012)])
         async with TestServer(create_app(directory)) as server:
             await check_browser(str(server.make_url("/")))
 

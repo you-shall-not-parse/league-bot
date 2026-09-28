@@ -39,9 +39,12 @@ async def snapshot(request):
 DATA_DIR = web.AppKey("data_dir", object)
 
 
-def create_app(data_dir=None):
+def create_app(data_dir=None, *, import_stats=False):
     app = web.Application(middlewares=[headers])
     app[DATA_DIR] = data_dir
+    if import_stats:
+        from league_web.player_stats import importer_context
+        app.cleanup_ctx.append(importer_context)
     app.router.add_get("/", index)
     app.router.add_get("/api/league", snapshot)
     app.router.add_static("/assets/", STATIC, show_index=False)
@@ -52,7 +55,7 @@ def create_app(data_dir=None):
 async def running_site(data_dir=None, *, port=None):
     """Own the HTTP listener for the lifetime of the Discord bot process."""
     port = int(os.environ.get("LEAGUE_WEB_PORT", "7030")) if port is None else port
-    runner = web.AppRunner(create_app(data_dir))
+    runner = web.AppRunner(create_app(data_dir, import_stats=True))
     try:
         await runner.setup()
         site = web.TCPSite(runner, "127.0.0.1", port)
@@ -66,4 +69,4 @@ async def running_site(data_dir=None, *, port=None):
 if __name__ == "__main__":
     from fixture_store import initialize
     initialize()
-    web.run_app(create_app(os.environ.get("LEAGUE_DATA_DIR")), host="127.0.0.1", port=int(os.environ.get("LEAGUE_WEB_PORT", "7030")))
+    web.run_app(create_app(os.environ.get("LEAGUE_DATA_DIR"), import_stats=True), host="127.0.0.1", port=int(os.environ.get("LEAGUE_WEB_PORT", "7030")))

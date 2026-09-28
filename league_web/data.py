@@ -82,6 +82,8 @@ def public_data(data_dir=None, rulebook_path=None):
         # including its descending clan-name tie breaker.
         rows.sort(key=lambda r: (r["maps_for"], r["difference"], r["w"], -r["l"], r["name"].lower()), reverse=True)
         divisions.append({"name": name, "rows": rows})
+    from league_web.player_stats import leaderboard
+    player_board = leaderboard(directory, fixtures)
     rules = Path(rulebook_path) if rulebook_path else ROOT / "league_web" / "rulebook.json"
     return {
         "league_name": season["name"],
@@ -92,5 +94,6 @@ def public_data(data_dir=None, rulebook_path=None):
         "season": int(season["starts_on"][:4]),
         "divisions": divisions, "fixtures": fixtures,
         "rounds": [{"number": n, "start": min(f["window_start"] for f in fixtures if f["round"] == n), "end": max(f["window_end"] for f in fixtures if f["round"] == n)} for n in sorted({f["round"] for f in fixtures})],
+        "player_leaderboard": player_board,
         "rulebook": json.loads(rules.read_text(encoding="utf-8")),
     }

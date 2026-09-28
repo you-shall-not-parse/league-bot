@@ -140,3 +140,35 @@ Run the complete migration and bot regression suite with
 `python tests/browser_sql_league.py` checks an isolated SQLite-backed season,
 including a confirmed result and dated calendar event, on desktop and mobile.
 It does not modify production data.
+
+
+## Player leaderboard
+
+Tab 06 ranks players by total kills from the stats links attached to confirmed
+current-season fixtures. CRCON `/games/<id>` and Bifrost `/hll/<map>/<uuid>`
+(with or without `/crcon`) are supported. Player IDs join records across providers;
+display names are not used as identity. Tied kill totals share a rank.
+
+The website service imports in the background on startup and checks every five
+minutes. Successful exports are refreshed daily; failures retry after 15 minutes.
+No external requests are made while serving a page. `player_stat_imports` and
+`player_match_stats` are created automatically inside the existing `data/league.db`.
+No new JSON files or manual migration commands are needed. Deploy the Python files
+as well as static assets, then restart `leaguebot.service`.
+
+The page reports imported/confirmed coverage, missing links and duplicate links.
+Unsupported or unavailable links remain unimported. Failed refreshes retain the
+last successful totals and show a stale-data notice. Corrected links and revoked
+confirmations are excluded from totals immediately; repeated imports replace rows.
+One export linked to multiple fixtures is excluded until the links are corrected.
+
+Each fixture currently supplies one stats link, covering one map. Multi-map match
+support requires storing a link for each map; the current coverage counts imported
+fixture links, not a verification that every map in a series has been supplied.
+Clan attribution is omitted because exports identify sides, not reliably league clans.
+K/D uses total kills divided by total deaths (dash when deaths are zero).
+
+Import URLs must resolve to public addresses. Redirects are disabled, downloads
+are limited to 8 MiB and requests time out after 30 seconds. Import failures are
+logged with `Player stats import failed`; fix the source link/export and the next
+retry will import it.
