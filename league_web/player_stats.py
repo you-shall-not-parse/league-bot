@@ -51,7 +51,8 @@ def source_url(link):
     base = f'{u.scheme}://{authority}'
     path = u.path.rstrip('/')
     bifrost = re.fullmatch(r'/hll/[A-Za-z0-9_-]+/([0-9a-fA-F-]{36})(?:/crcon)?', path)
-    if bifrost and (host == 'bifrostgaming.com' or host.endswith('.bifrostgaming.com')):
+    bifrost_host = any(host == domain or host.endswith('.' + domain) for domain in ('bifrostgaming.com', 'bifroststats.com'))
+    if bifrost and bifrost_host:
         return base + path.removesuffix('/crcon') + '/crcon'
     crcon = re.fullmatch(r'/games/(\d+)', path)
     if crcon:

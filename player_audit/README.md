@@ -2,6 +2,9 @@
 
 This feature is Discord-only. Nothing is exposed through the website/API.
 
+Supported Bifrost links include `bifroststats.com/hll/match/<uuid>` and the older
+`<server>.bifrostgaming.com/hll/<map>/<uuid>` format. `/crcon` is appended automatically.
+
 ## Existing data flow
 
 `cogs/scoreboard.py` saves submissions and `/scoreboard_admin_set_stats` corrections

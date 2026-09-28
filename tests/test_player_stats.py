@@ -1,4 +1,4 @@
-﻿import tempfile
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -18,6 +18,11 @@ class PlayerStatsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.source, 'https://stats.example.com/api/get_map_scoreboard?map_id=1012')
         url = 'https://frostbite.bifrostgaming.com/hll/driel_warfare/2b54970e-e27e-5421-9e92-31e3b7e9edbd'
         self.assertEqual(source_url(url), source_url(url + '/crcon'))
+        new_url = 'https://bifroststats.com/hll/match/543d32e8-5448-5013-9199-da2821df070b'
+        self.assertEqual(source_url(new_url), new_url + '/crcon')
+        self.assertEqual(source_url(new_url + '/crcon/'), new_url + '/crcon')
+        with self.assertRaises(ValueError):
+            source_url(new_url.replace('bifroststats.com', 'bifroststats.com.evil.example'))
         for url in ('http://127.0.0.1/games/1', 'http://169.254.169.254/games/1', 'file:///games/1', 'https://user:pass@host/games/1'):
             with self.assertRaises(ValueError):
                 source_url(url)
