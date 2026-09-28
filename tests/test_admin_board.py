@@ -37,6 +37,44 @@ class AdminBoardTests(unittest.IsolatedAsyncioTestCase):
         await self.cog._recover_admin_board(channel)
         duplicate.delete.assert_awaited_once()
 
+    async def test_rounds_are_reassigned_to_chronological_messages(self):
+        self.cog.admin_summary_message_id = 10
+        self.cog.admin_round_message_ids = {'1': 20, '2': 30, '3': 60, '4': 40, '5': 50}
+        self.cog._save_admin_board_state = Mock()
+        channel = SimpleNamespace(fetch_message=AsyncMock())
+        await self.cog._order_admin_board_messages(channel)
+        self.assertEqual(self.cog.admin_summary_message_id, 10)
+        self.assertEqual(self.cog.admin_round_message_ids, {'1': 20, '2': 30, '3': 40, '4': 50, '5': 60})
+        await self.cog._order_admin_board_messages(channel)
+        self.assertEqual(list(self.cog.admin_round_message_ids.values()), [20,30,40,50,60])
+
+    async def test_missing_middle_round_reuses_later_messages_before_appending(self):
+        self.cog.admin_summary_message_id = 10
+        self.cog.admin_round_message_ids = {'1': 20, '2': 30, '3': 40, '4': 50, '5': 60}
+        self.cog._save_admin_board_state = Mock()
+        async def fetch(identifier):
+            if identifier == 40:
+                raise discord.NotFound(SimpleNamespace(status=404, reason='Missing'), 'Missing')
+        await self.cog._order_admin_board_messages(SimpleNamespace(fetch_message=fetch))
+        self.assertEqual(self.cog.admin_round_message_ids, {'1':20, '2':30, '3':50, '4':60})
+
+    async def test_order_fetch_failure_preserves_existing_mapping(self):
+        self.cog.admin_summary_message_id = 10
+        self.cog.admin_round_message_ids = {'3': 60}
+        self.cog._save_admin_board_state = Mock()
+        with self.assertRaises(TimeoutError):
+            await self.cog._order_admin_board_messages(SimpleNamespace(fetch_message=AsyncMock(side_effect=TimeoutError)))
+        self.assertEqual(self.cog.admin_round_message_ids, {'3': 60})
+        self.cog._save_admin_board_state.assert_not_called()
+
+    def test_emoji_markup_is_not_tagged_again(self):
+        guild = SimpleNamespace(emojis=[discord.PartialEmoji(name='48th', id=1462557987422863452), discord.PartialEmoji(name='HG', id=123)])
+        title = self.cog._format_event_title(guild, 'HG vs ZR48')
+        self.assertEqual(title, 'HG <:HG:123> vs ZR48 <:48th:1462557987422863452>')
+        self.assertEqual(self.cog._format_event_title(guild, title), title)
+        self.assertEqual(self.cog._format_event_title(guild, 'HG :HG: vs ZR48 :48th~1:'), 'HG :HG: vs ZR48 :48th~1:')
+        self.assertEqual(self.cog._format_event_title(guild, 'HGH something48th'), 'HGH something48th')
+
     async def test_fetch_errors_never_create_duplicate_boards(self):
         for error in (
             discord.Forbidden(SimpleNamespace(status=403, reason="Forbidden"), "No access"),

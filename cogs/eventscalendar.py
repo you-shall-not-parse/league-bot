@@ -753,6 +753,26 @@ class EventDisplayCog(commands.Cog):
                 pass
         self._admin_board_recovered = True
 
+    async def _order_admin_board_messages(self, channel) -> None:
+        """Reuse messages in Discord creation order, then append any missing rounds."""
+        tracked = [self.admin_summary_message_id, *self.admin_round_message_ids.values()]
+        existing = []
+        for message_id in sorted({value for value in tracked if isinstance(value, int)}):
+            try:
+                await channel.fetch_message(message_id)
+            except discord.NotFound:
+                continue
+            existing.append(message_id)
+        # Snowflake IDs are chronological. Editing the contents of these slots
+        # fixes 1,2,4,5,3 without deleting/reposting the whole board.
+        self.admin_summary_message_id = existing[0] if existing else None
+        self.admin_round_message_ids = {
+            str(round_no): existing[index]
+            for index, round_no in enumerate(sorted(ROUND_WINDOWS), 1)
+            if index < len(existing)
+        }
+        self._save_admin_board_state()
+
     async def _refresh_admin_fixture_board(self, guild: discord.Guild) -> bool:
         if not hasattr(self, '_admin_board_lock'):
             self._admin_board_lock = asyncio.Lock()
@@ -771,6 +791,7 @@ class EventDisplayCog(commands.Cog):
             return False
 
         await self._recover_admin_board(channel)
+        await self._order_admin_board_messages(channel)
 
         now = datetime.now(timezone.utc)
         fixtures = list_fixture_views(now=now)
@@ -920,30 +941,21 @@ class EventDisplayCog(commands.Cog):
         return emoji_tag
 
     def _format_event_title(self, guild: discord.Guild, title: str) -> str:
-        """Append configured emojis after matching keywords in the title."""
-
+        """Tag clan tokens once, without matching names inside emoji markup."""
         if not title or not KEYWORD_EMOJI_TAGS:
             return title
-
-        formatted = title
-
-        # Longer keys first to avoid partial matches.
-        for keyword in sorted(KEYWORD_EMOJI_TAGS.keys(), key=len, reverse=True):
-            emoji_tag = KEYWORD_EMOJI_TAGS.get(keyword)
-            if not emoji_tag:
-                continue
-
-            emoji_str = self._resolve_custom_emoji(guild, emoji_tag)
-
-            # Match keyword as a standalone token (not inside another word).
-            pattern = re.compile(rf"(?<!\\w){re.escape(keyword)}(?!\\w)")
-
-            def _repl(match: re.Match) -> str:
-                return f"{match.group(0)} {emoji_str}"  # append with a space before emoji
-
-            formatted = pattern.sub(_repl, formatted)
-
-        return formatted
+        keywords = '|'.join(re.escape(k) for k in sorted(KEYWORD_EMOJI_TAGS, key=len, reverse=True))
+        emoji = r'<a?:[^:<>]+:\d+>|:[A-Za-z0-9_~]+:'
+        pattern = re.compile(rf'{emoji}|(?P<clan>(?<!\w)(?:{keywords})(?!\w))')
+        def replace(match):
+            keyword = match.group('clan')
+            if keyword is None:
+                return match.group(0)
+            # Preserve titles already tagged by this or another league cog.
+            if re.match(rf'\s*(?:{emoji})', title[match.end():]):
+                return keyword
+            return f"{keyword} {self._resolve_custom_emoji(guild, KEYWORD_EMOJI_TAGS[keyword])}"
+        return pattern.sub(replace, title)
 
     async def _update_once(self, *, reason: str) -> bool:
         async with self._update_lock:
