@@ -14,7 +14,7 @@ from cogs import scoreboard as sb
 def match(**overrides):
     values = dict(match_id="match123", submitter_id=1,
                   submitter_clan_role_id=2, opponent_clan_role_id=3,
-                  submitter_score=3, opponent_score=2, created_at="2026-09-24",
+                  submitter_score=3, opponent_score=2, created_at="2026-10-24",
                   stats_link="https://stats.example.com/matches/12")
     values.update(overrides)
     return sb.PendingMatch(**values)

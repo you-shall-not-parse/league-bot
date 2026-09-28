@@ -714,7 +714,52 @@ class EventDisplayCog(commands.Cog):
             else None
         )
 
+    async def _recover_admin_board(self, channel) -> None:
+        """Recover persisted-ID gaps and remove only duplicate bot control-board posts."""
+        if getattr(self, '_admin_board_recovered', False):
+            return
+        user = getattr(getattr(self, 'bot', None), 'user', None)
+        if user is None:
+            return
+        found = {}
+        async for message in channel.history(limit=500):
+            if message.author.id != user.id or not message.embeds:
+                continue
+            embed = message.embeds[0]
+            title = embed.title or ''
+            footer = getattr(embed.footer, 'text', '') or ''
+            match = re.match(r'^Round (\d+) [\u00b7-] ', title)
+            if match and footer.startswith(f'Round {match[1]}') and 'fixtures' in footer:
+                key = match[1]
+            elif title == '\U0001f6e0\ufe0f League Fixture Control':
+                key = 'summary'
+            else:
+                continue
+            found.setdefault(key, []).append(message)
+        duplicates = []
+        for key, messages in found.items():
+            current = self.admin_summary_message_id if key == 'summary' else self.admin_round_message_ids.get(key)
+            keep = next((m for m in messages if m.id == current), min(messages, key=lambda m: m.id))
+            if key == 'summary':
+                self.admin_summary_message_id = keep.id
+            else:
+                self.admin_round_message_ids[key] = keep.id
+            duplicates.extend(m for m in messages if m.id != keep.id)
+        self._save_admin_board_state()
+        for message in duplicates:
+            try:
+                await message.delete()
+            except discord.NotFound:
+                pass
+        self._admin_board_recovered = True
+
     async def _refresh_admin_fixture_board(self, guild: discord.Guild) -> bool:
+        if not hasattr(self, '_admin_board_lock'):
+            self._admin_board_lock = asyncio.Lock()
+        async with self._admin_board_lock:
+            return await self._refresh_admin_fixture_board_locked(guild)
+
+    async def _refresh_admin_fixture_board_locked(self, guild: discord.Guild) -> bool:
         channel = guild.get_channel(ADMIN_FIXTURE_BOARD_CHANNEL_ID)
         if channel is None:
             try:
@@ -724,6 +769,8 @@ class EventDisplayCog(commands.Cog):
         if not isinstance(channel, discord.TextChannel):
             logger.error("Admin fixture-board channel %s is not available", ADMIN_FIXTURE_BOARD_CHANNEL_ID)
             return False
+
+        await self._recover_admin_board(channel)
 
         now = datetime.now(timezone.utc)
         fixtures = list_fixture_views(now=now)

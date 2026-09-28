@@ -24,7 +24,7 @@ class SQLMigrationTests(unittest.TestCase):
         # Existing pre-migration fixture database, without any JSON import.
         with patch.object(ledger, "migrate"):
             ledger.initialize()
-        self.fixture_id = ledger.fixture_id_for("Allied Division", 1, "OFIN", "HG")
+        self.fixture_id = ledger.fixture_id_for("Allied Division", 1, "OFIN", "KRTS")
 
     def legacy(self, name, state):
         path = self.directory / (name + ".json")
@@ -33,22 +33,22 @@ class SQLMigrationTests(unittest.TestCase):
 
     def match(self, **kwargs):
         return dict({"match_id": "m1", "submitter_id": 9,
-                     "submitter_clan_role_id": CLAN_ROLE_IDS["HG"],
+                     "submitter_clan_role_id": CLAN_ROLE_IDS["KRTS"],
                      "opponent_clan_role_id": CLAN_ROLE_IDS["OFIN"],
                      "submitter_score": 2, "opponent_score": 3, "status": "confirmed",
-                     "created_at": "2026-08-04T19:00:00+00:00", "confirmed_at": "2026-08-05T19:00:00+00:00",
+                     "created_at": "2026-10-20T19:00:00+00:00", "confirmed_at": "2026-10-21T19:00:00+00:00",
                      "stats_link": "https://stats.example/1", "validation_message_id": 991}, **kwargs)
 
     def test_migrates_all_state_and_links_reversed_late_result(self):
         self.legacy("scoreboard", {"pending_matches": {"m1": self.match()}})
         self.legacy("fixture_organiser_state", {"organiser_message": 1, "threads": {"42": {
-            "thread_id": 42, "round_no": 1, "clan_a": "OFIN", "clan_b": "HG", "agreed_datetime_utc": "2026-07-30T19:00:00+00:00"}}})
+            "thread_id": 42, "round_no": 1, "clan_a": "OFIN", "clan_b": "KRTS", "agreed_datetime_utc": "2026-10-15T19:00:00+00:00"}}})
         self.legacy("streamer_requests_state", {"requests": {"42": {"accepted_by": [99]}}})
         ledger.initialize()
         report = public_data(self.directory)
         fixture = next(f for f in report["fixtures"] if f["id"] == self.fixture_id)
         self.assertEqual((fixture["score_a"], fixture["score_b"], fixture["status"]), (3, 2, "confirmed"))
-        self.assertEqual(fixture["scheduled_at"], "2026-07-30T19:00:00+00:00")
+        self.assertEqual(fixture["scheduled_at"], "2026-10-15T19:00:00+00:00")
         self.assertEqual(fixture["stats_url"], "https://stats.example/1")
         self.assertEqual(load_state(self.directory / "streamer_requests_state")["requests"]["42"]["accepted_by"], [99])
         self.assertEqual(load_scoreboard(self.directory / "scoreboard")["pending_by_validation_message"], {"991": "m1"})
@@ -58,15 +58,15 @@ class SQLMigrationTests(unittest.TestCase):
 
     def test_website_uses_saved_id_and_dates_not_generated_configuration(self):
         with connect(self.path) as db:
-            db.execute("UPDATE fixtures SET fixture_id='existing-server-id',window_start='2026-07-21',agreed_datetime_utc='2026-07-29T20:00:00+00:00' WHERE fixture_id=?", (self.fixture_id,))
+            db.execute("UPDATE fixtures SET fixture_id='existing-server-id',window_start='2026-10-06',agreed_datetime_utc='2026-10-14T20:00:00+00:00' WHERE fixture_id=?", (self.fixture_id,))
         self.legacy("scoreboard", {"pending_matches": {"m1": self.match()}})
         ledger.initialize()
         report = public_data(self.directory)
         self.assertEqual(len(report["fixtures"]), 20)
         saved = next(f for f in report["fixtures"] if f["id"] == "existing-server-id")
-        self.assertEqual(saved["window_start"], "2026-07-21")
+        self.assertEqual(saved["window_start"], "2026-10-06")
         self.assertEqual(saved["score_a"], 3)
-        self.assertEqual(ledger.find_fixture(1, "HG", "OFIN")["fixture_id"], "existing-server-id")
+        self.assertEqual(ledger.find_fixture(1, "KRTS", "OFIN")["fixture_id"], "existing-server-id")
 
     def test_second_startup_ignores_json_even_if_it_changes(self):
         self.legacy("scoreboard", {"pending_matches": {"m1": self.match()}})
@@ -79,7 +79,7 @@ class SQLMigrationTests(unittest.TestCase):
         self.assertEqual(ledger.get_fixture(self.fixture_id)["score_b"], 1)
 
     def test_bad_legacy_file_aborts_import_without_partial_state(self):
-        self.legacy("fixture_organiser_state", {"threads": {"42": {"round_no": 1, "clan_a": "OFIN", "clan_b": "HG"}}})
+        self.legacy("fixture_organiser_state", {"threads": {"42": {"round_no": 1, "clan_a": "OFIN", "clan_b": "KRTS"}}})
         (self.directory / "scoreboard.json").write_text("{broken", encoding="utf-8")
         with self.assertRaises(json.JSONDecodeError):
             ledger.initialize()
@@ -101,8 +101,8 @@ class SQLMigrationTests(unittest.TestCase):
 
     def test_cancelled_event_date_not_restored_and_old_season_not_linked(self):
         with connect(self.path) as db:
-            db.execute("UPDATE fixtures SET event_cancelled_at='2026-07-28',agreed_datetime_utc=NULL WHERE fixture_id=?", (self.fixture_id,))
-        self.legacy("levents_history", {"44": {"name": "Round 1: OFIN vs HG", "id": 44, "start_time": "2026-07-30T19:00:00+00:00"}})
+            db.execute("UPDATE fixtures SET event_cancelled_at='2026-10-13',agreed_datetime_utc=NULL WHERE fixture_id=?", (self.fixture_id,))
+        self.legacy("levents_history", {"44": {"name": "Round 1: OFIN vs KRTS", "id": 44, "start_time": "2026-10-15T19:00:00+00:00"}})
         self.legacy("scoreboard", {"pending_matches": {"m1": self.match(created_at="2025-07-20")}})
         ledger.initialize()
         fixture = ledger.get_fixture(self.fixture_id)

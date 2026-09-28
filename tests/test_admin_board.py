@@ -17,6 +17,26 @@ class AdminBoardTests(unittest.IsolatedAsyncioTestCase):
         self.cog.admin_round_message_ids = {}
         self.cog.stale_admin_board = None
 
+    async def test_recovers_round_three_and_removes_only_own_duplicate_boards(self):
+        self.cog.bot = SimpleNamespace(user=SimpleNamespace(id=7))
+        def message(identifier, author=7, title="Round 3 \u00b7 old dates", footer="Round 3 \u00b7 4 fixtures"):
+            embed = discord.Embed(title=title)
+            embed.set_footer(text=footer)
+            return SimpleNamespace(id=identifier, author=SimpleNamespace(id=author), embeds=[embed], delete=AsyncMock())
+        original, duplicate, human, unrelated = message(30), message(31), message(32, author=8), message(33, title="Other message")
+        async def history(**kwargs):
+            for item in (duplicate, human, unrelated, original):
+                yield item
+        channel = SimpleNamespace(history=history)
+        self.cog._save_admin_board_state = Mock()
+        await self.cog._recover_admin_board(channel)
+        self.assertEqual(self.cog.admin_round_message_ids, {'3': 30})
+        duplicate.delete.assert_awaited_once()
+        for item in (original, human, unrelated):
+            item.delete.assert_not_awaited()
+        await self.cog._recover_admin_board(channel)
+        duplicate.delete.assert_awaited_once()
+
     async def test_fetch_errors_never_create_duplicate_boards(self):
         for error in (
             discord.Forbidden(SimpleNamespace(status=403, reason="Forbidden"), "No access"),

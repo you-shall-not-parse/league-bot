@@ -60,3 +60,5 @@
 @media(max-width:600px){.trophy-grid{grid-template-columns:1fr}.trophy-card{padding:28px 20px}}
 
 .leaderboard-coverage{padding:16px 20px;border:1px solid var(--line);background:var(--panel);color:var(--muted)}.leaderboard-coverage strong{color:var(--ink)}.player-table{border:1px solid var(--line);background:var(--panel)}.player-table td:nth-child(3){color:#ff8a76}.player-table td:nth-child(2){white-space:normal;overflow-wrap:anywhere;min-width:115px}.player-table td:last-child{color:var(--ink)}
+
+.season-archive{margin-top:40px;padding-top:30px;border-top:1px solid var(--line)}

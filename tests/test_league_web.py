@@ -28,7 +28,7 @@ class LeagueDataTests(unittest.TestCase):
     def write_fixture(self, status="confirmed"):
         self.initialize()
         with closing(sqlite3.connect(self.directory / "league.db")) as db:
-            db.execute("UPDATE fixtures SET score_status=?,score_a=3,score_b=2,score_match_id='match1',score_submitted_at='2026-07-21T12:00:00+00:00',thread_id=123456,agreed_datetime_utc='2026-07-21T12:00:00+00:00' WHERE fixture_id=?", (status, fixture_id_for("Allied Division", 1, "OFIN", "HG")))
+            db.execute("UPDATE fixtures SET score_status=?,score_a=3,score_b=2,score_match_id='match1',score_submitted_at='2026-10-06T12:00:00+00:00',thread_id=123456,agreed_datetime_utc='2026-10-06T12:00:00+00:00' WHERE fixture_id=?", (status, fixture_id_for("Allied Division", 1, "OFIN", "KRTS")))
             db.execute("DELETE FROM standings")
             db.commit()
 
@@ -42,7 +42,7 @@ class LeagueDataTests(unittest.TestCase):
         result = public_data(self.directory)
         row = result["divisions"][0]["rows"][0]
         self.assertEqual((row["name"], row["maps_for"], row["difference"], row["w"]), ("OFIN", 3, 1, 1))
-        fixture = next(f for f in result["fixtures"] if f["id"] == fixture_id_for("Allied Division", 1, "OFIN", "HG"))
+        fixture = next(f for f in result["fixtures"] if f["id"] == fixture_id_for("Allied Division", 1, "OFIN", "KRTS"))
         self.assertEqual(fixture["score_a"], 3)
         self.assertNotIn("thread_id", json.dumps(result))
         self.assertNotIn("score_match_id", json.dumps(result))
@@ -56,28 +56,28 @@ class LeagueDataTests(unittest.TestCase):
                     db_path.unlink()
                 self.write_fixture(status)
                 result = public_data(self.directory)
-                self.assertIsNone(next(f for f in result["fixtures"] if f["id"] == fixture_id_for("Allied Division", 1, "OFIN", "HG"))["score_a"])
+                self.assertIsNone(next(f for f in result["fixtures"] if f["id"] == fixture_id_for("Allied Division", 1, "OFIN", "KRTS"))["score_a"])
                 self.assertTrue(all(r["played"] == 0 for d in result["divisions"] for r in d["rows"]))
 
     def test_admin_standings_and_stats_links(self):
         self.write_fixture()
-        state = {"clan_stats": {str(CLAN_ROLE_IDS["HG"]): {"w": 4, "l": 0, "played": 4, "maps_for": 10, "maps_against": 2}}, "pending_matches": {"match1": {"match_id": "match1", "fixture_id": fixture_id_for("Allied Division", 1, "OFIN", "HG"), "submitter_clan_role_id": CLAN_ROLE_IDS["OFIN"], "opponent_clan_role_id": CLAN_ROLE_IDS["HG"], "submitter_score": 3, "opponent_score": 2, "status": "confirmed", "created_at": "2026-07-21", "stats_link": "javascript:alert(1)", "submitter_user_id": "secret"}}}
+        state = {"clan_stats": {str(CLAN_ROLE_IDS["KRTS"]): {"w": 4, "l": 0, "played": 4, "maps_for": 10, "maps_against": 2}}, "pending_matches": {"match1": {"match_id": "match1", "fixture_id": fixture_id_for("Allied Division", 1, "OFIN", "KRTS"), "submitter_clan_role_id": CLAN_ROLE_IDS["OFIN"], "opponent_clan_role_id": CLAN_ROLE_IDS["KRTS"], "submitter_score": 3, "opponent_score": 2, "status": "confirmed", "created_at": "2026-10-06", "stats_link": "javascript:alert(1)", "submitter_user_id": "secret"}}}
         state_path = self.directory / "scoreboard.json"
         save_scoreboard(state_path, state)
         result = public_data(self.directory)
-        self.assertEqual(result["divisions"][0]["rows"][0]["name"], "HG")
-        self.assertIsNone(next(f for f in result["fixtures"] if f["id"] == fixture_id_for("Allied Division", 1, "OFIN", "HG"))["stats_url"])
+        self.assertEqual(result["divisions"][0]["rows"][0]["name"], "KRTS")
+        self.assertIsNone(next(f for f in result["fixtures"] if f["id"] == fixture_id_for("Allied Division", 1, "OFIN", "KRTS"))["stats_url"])
         self.assertNotIn("secret", json.dumps(result))
         state["pending_matches"]["match1"]["stats_link"] = "https://stats.example/match/1"
         save_scoreboard(state_path, state)
-        self.assertEqual(next(f for f in public_data(self.directory)["fixtures"] if f["id"] == fixture_id_for("Allied Division", 1, "OFIN", "HG"))["stats_url"], "https://stats.example/match/1")
+        self.assertEqual(next(f for f in public_data(self.directory)["fixtures"] if f["id"] == fixture_id_for("Allied Division", 1, "OFIN", "KRTS"))["stats_url"], "https://stats.example/match/1")
 
     def test_legacy_stats_and_ties_match_bot_renderer(self):
-        state = {"clan_stats": {str(CLAN_ROLE_IDS[name]): {"w": 1, "l": 0, "for": 3, "against": 2} for name in ("OFIN", "HG")}}
+        state = {"clan_stats": {str(CLAN_ROLE_IDS[name]): {"w": 1, "l": 0, "for": 3, "against": 2} for name in ("OFIN", "KRTS")}}
         self.initialize()
         save_scoreboard(self.directory / "scoreboard.json", state)
         rows = public_data(self.directory)["divisions"][0]["rows"]
-        self.assertEqual([r["name"] for r in rows[:2]], ["OFIN", "HG"])
+        self.assertEqual([r["name"] for r in rows[:2]], ["OFIN", "KRTS"])
         self.assertEqual((rows[0]["maps_for"], rows[0]["played"], rows[0]["difference"]), (3, 1, 1))
 
 

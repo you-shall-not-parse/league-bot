@@ -23,19 +23,22 @@ CLAN_ROLE_IDS: dict[str, int] = {
     "OFIN": 1520125783983653105,
     "HG": 1517652132541628456,
     "KRTS": 1518583363953229894,
-    "7CIE": 1520121068600164582,
+    "50A": 1552446051926147102,
     "RMC": 1462558256147857408,
     "7DR": 1462383332598743080,
     "7PD": 1464763568506536000,
-    "PG60": 1464763651108896778,
-    "ZSR48th": 1462558355166986261,
+    "SoV": 1545832802010800239,
+    "ZR48": 1462558355166986261,
     "ZFG": 1476529643128356925,
 }
 
 # Historical names that should resolve to the current clan identity. These keep
 # persisted fixtures and in-progress organiser threads working across renames.
 CLAN_NAME_ALIASES: dict[str, str] = {
-    "48th": "ZSR48th",
+    "48th": "ZR48",
+    "ZSR48th": "ZR48",
+    "ZSR/48th": "ZR48",
+    "48th/ZSR": "ZR48",
 }
 
 
@@ -67,11 +70,12 @@ KEYWORD_EMOJI_TAGS: dict[str, str] = {
     "KRTS": ":KRTS:",
     "7DR": ":7DR:",
     "7PD": ":7PD:",
+    "ZR48": ":48th:",
     "ZSR48th": ":48th:",
     "48th": ":48th:",  # Historical event titles
-    "PG60": ":flag_de:",
+    "SoV": ":SoV:",
+    "50A": ":50a:",
     "RMC": ":RMC:",
-    "7CIE": ":7CIE:",
     "ZFG": ":ZFG:",
 }
 
@@ -106,8 +110,8 @@ EMBED_COLOR: int = 0x5865F2
 
 # Divisions for the active season.
 DIVISION_CLANS: dict[str, list[str]] = {
-    "Allied Division": ["OFIN", "HG", "KRTS", "7DR", "RMC"],
-    "Axis Division": ["ZSR48th", "7PD", "ZFG", "PG60", "7CIE"],
+    "Allied Division": ["HG", "OFIN", "50A", "ZR48", "KRTS"],
+    "Axis Division": ["RMC", "7PD", "ZFG", "7DR", "SoV"],
 }
 
 # Display order for schedule-like surfaces.
@@ -122,11 +126,11 @@ BYE_TEAM_NAME: str = "BYE"
 
 # Round windows (inclusive) for validation and display.
 ROUND_WINDOWS: dict[int, tuple[date, date]] = {
-    1: (date(2026, 7, 20), date(2026, 8, 2)),
-    2: (date(2026, 8, 3), date(2026, 8, 16)),
-    3: (date(2026, 8, 17), date(2026, 8, 30)),
-    4: (date(2026, 8, 31), date(2026, 9, 13)),
-    5: (date(2026, 9, 14), date(2026, 9, 27)),
+    1: (date(2026, 10, 5), date(2026, 10, 18)),
+    2: (date(2026, 10, 19), date(2026, 11, 1)),
+    3: (date(2026, 11, 2), date(2026, 11, 15)),
+    4: (date(2026, 11, 16), date(2026, 11, 29)),
+    5: (date(2026, 11, 30), date(2026, 12, 13)),
 }
 
 
@@ -150,19 +154,19 @@ def format_round_window(round_no: int) -> str:
 
 
 DIVISION_FIXTURES_BY_ROUND: dict[str, dict[int, list[tuple[str, str]]]] = {
-    "Allied Division": {
-        1: [("OFIN", "HG"), ("KRTS", "7DR")],
-        2: [("KRTS", "OFIN"), ("HG", "RMC")],
-        3: [("7DR", "OFIN"), ("KRTS", "RMC")],
-        4: [("OFIN", "RMC"), ("HG", "7DR")],
-        5: [("HG", "KRTS"), ("7DR", "RMC")],
-    },
     "Axis Division": {
-        1: [("ZSR48th", "7PD"), ("ZFG", "PG60")],
-        2: [("ZFG", "ZSR48th"), ("7PD", "7CIE")],
-        3: [("PG60", "ZSR48th"), ("ZFG", "7CIE")],
-        4: [("7CIE", "ZSR48th"), ("7PD", "PG60")],
-        5: [("7PD", "ZFG"), ("PG60", "7CIE")],
+        1: [("7PD", "SoV"), ("ZFG", "7DR")],
+        2: [("RMC", "SoV"), ("7PD", "ZFG")],
+        3: [("RMC", "7DR"), ("SoV", "ZFG")],
+        4: [("RMC", "ZFG"), ("7DR", "7PD")],
+        5: [("RMC", "7PD"), ("7DR", "SoV")],
+    },
+    "Allied Division": {
+        1: [("OFIN", "KRTS"), ("50A", "ZR48")],
+        2: [("HG", "KRTS"), ("OFIN", "50A")],
+        3: [("HG", "ZR48"), ("KRTS", "50A")],
+        4: [("HG", "50A"), ("ZR48", "OFIN")],
+        5: [("HG", "OFIN"), ("ZR48", "KRTS")],
     },
 }
 

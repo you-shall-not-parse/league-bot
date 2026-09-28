@@ -112,7 +112,7 @@ def _resolve_match(db, match):
     if not _has_fixtures(db):
         return match.get("fixture_id")
     if match.get("fixture_id"):
-        row = db.execute("SELECT fixture_id FROM fixtures WHERE fixture_id=?", (match["fixture_id"],)).fetchone()
+        row = db.execute("SELECT fixture_id FROM fixtures WHERE fixture_id=? AND season_key=?", (match["fixture_id"], SEASON_KEY)).fetchone()
         if row:
             return row[0]
     roles = {str(role): name for name, role in CLAN_ROLE_IDS.items()}
@@ -175,6 +175,8 @@ def _save_scoreboard(db, state, *, importing=False):
         match = dict(raw, match_id=str(raw.get("match_id") or key))
         match["fixture_id"] = _resolve_match(db, match)
         old = db.execute("SELECT * FROM matches WHERE match_id=?", (match["match_id"],)).fetchone()
+        if old is not None and old["season_key"] != SEASON_KEY and not importing:
+            continue  # Historical records are immutable from active-season saves.
         match_season = SEASON_KEY
         if match.get("fixture_id") and _has_fixtures(db):
             fixture_season = db.execute("SELECT season_key FROM fixtures WHERE fixture_id=?", (match["fixture_id"],)).fetchone()
@@ -272,6 +274,8 @@ def migrate(path=DB_PATH):
             for name in clans:
                 db.execute("INSERT OR REPLACE INTO season_clans VALUES (?,?,?,?)", (SEASON_KEY, CLAN_ROLE_IDS[name], name, division))
         if db.execute("SELECT 1 FROM league_migrations WHERE name='unified-sql-v1'").fetchone():
+            for name, role in CLAN_ROLE_IDS.items():
+                db.execute("INSERT OR IGNORE INTO standings VALUES (?,?,?,?,?,?,?,?)", (SEASON_KEY, str(role), name, 0, 0, 0, 0, 0))
             return
         imported = {}
         for filename in LEGACY_FILES:

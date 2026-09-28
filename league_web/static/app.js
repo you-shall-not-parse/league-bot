@@ -38,9 +38,9 @@ async function refresh() {
   }
 }
 
-function standings() {
-  return heading('THE CAMPAIGN SO FAR','Division scoreboards','Two divisions. One campaign. Standings follow the league’s confirmed scores.') +
-    `<div class="division-grid">${data.divisions.map(d=>`<section class="division"><div class="division-head"><h3>${escapeHTML(d.name)}</h3><small>${d.rows.length} CLANS</small></div><div class="table-wrap"><table aria-label="${escapeHTML(d.name)} standings"><thead><tr>${['#','CLAN','MP','W','L','DIFF','SCORE'].map(h=>`<th scope="col">${h}</th>`).join('')}</tr></thead><tbody>${d.rows.map((r,i)=>`<tr><td>${String(i+1).padStart(2,'0')}</td><td>${clan(r.name)}</td><td>${r.played}</td><td>${r.w}</td><td>${r.l}</td><td>${r.difference > 0 ? '+' : ''}${r.difference}</td><td>${r.maps_for}</td></tr>`).join('')}</tbody></table></div><p class="table-note">Ranked by maps won, then map difference and match record.</p></section>`).join('')}</div><p class="legend">MP — matches played &nbsp; / &nbsp; W — wins &nbsp; / &nbsp; L — losses &nbsp; / &nbsp; DIFF — map difference &nbsp; / &nbsp; SCORE — maps won</p>`;
+function standings(divisions = data.divisions, archive = false) {
+  return (archive ? '' : heading('THE CAMPAIGN SO FAR','Division scoreboards','Two divisions. One campaign. Standings follow the league’s confirmed scores.')) +
+    `<div class="division-grid">${divisions.map(d=>`<section class="division"><div class="division-head"><h3>${escapeHTML(d.name)}</h3><small>${d.rows.length} CLANS</small></div><div class="table-wrap"><table aria-label="${escapeHTML(d.name)} standings"><thead><tr>${['#','CLAN','MP','W','L','DIFF','SCORE'].map(h=>`<th scope="col">${h}</th>`).join('')}</tr></thead><tbody>${d.rows.map((r,i)=>`<tr><td>${String(i+1).padStart(2,'0')}</td><td>${clan(r.name)}</td><td>${r.played}</td><td>${r.w}</td><td>${r.l}</td><td>${r.difference > 0 ? '+' : ''}${r.difference}</td><td>${r.maps_for}</td></tr>`).join('')}</tbody></table></div><p class="table-note">Ranked by maps won, then map difference and match record.</p></section>`).join('')}</div><p class="legend">MP — matches played &nbsp; / &nbsp; W — wins &nbsp; / &nbsp; L — losses &nbsp; / &nbsp; DIFF — map difference &nbsp; / &nbsp; SCORE — maps won</p>`;
 }
 
 function filters() {
@@ -102,7 +102,7 @@ function trophyRoom() {
     <article class="trophy-card">${trophy}<p class="eyebrow">SEASON 1</p><h3>RMC</h3><div class="trophy-clan">${clanLogo('RMC')}</div><p class="trophy-title">Champions</p><p class="trophy-note">One division. One winner.</p></article>
     <article class="trophy-card">${trophy}<p class="eyebrow">SEASON 2</p><h3>HG</h3><div class="trophy-clan">${clanLogo('HG')}</div><p class="trophy-title">Axis Division Champions</p></article>
     <article class="trophy-card">${trophy}<p class="eyebrow">SEASON 2</p><h3>7PD</h3><div class="trophy-clan">${clanLogo('7PD')}</div><p class="trophy-title">Allied Division Champions</p></article>
-  </div>`;
+  </div>` + (data.season_archives || []).map(season => `<section class="season-archive"><div class="heading"><div><p class="eyebrow">ARCHIVED STANDINGS</p><h2>Season ${season.season_number}</h2></div><p>${date(season.starts_on)} &ndash; ${date(season.ends_on)} ${new Date(season.ends_on).getUTCFullYear()}</p></div>${standings(season.divisions, true)}</section>`).join('');
 }
 
 function rulebook() {

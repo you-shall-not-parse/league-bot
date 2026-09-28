@@ -61,7 +61,7 @@ def fixture_id_for(division: str, round_no: int, clan_a: str, clan_b: str) -> st
     # creating a duplicate and losing its event/score links.
     identity_a = fixture_identity_name(clan_a)
     identity_b = fixture_identity_name(clan_b)
-    return f"{season_year}-{_slug(division)}-r{round_no}-{_slug(identity_a)}-{_slug(identity_b)}"
+    return f"{SEASON_KEY}-{_slug(division)}-r{round_no}-{_slug(identity_a)}-{_slug(identity_b)}"
 
 
 def _configured_fixture(round_no: int, clan_a: str, clan_b: str) -> Optional[tuple[str, str, str]]:
@@ -74,6 +74,8 @@ def _configured_fixture(round_no: int, clan_a: str, clan_b: str) -> Optional[tup
 
 
 def initialize() -> None:
+    from season_rollover import require_rollover
+    require_rollover(DB_PATH)
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     backup_before_migration(DB_PATH)
     with _connect() as connection:
@@ -102,8 +104,6 @@ def initialize() -> None:
                 score_confirmed_at TEXT,
                 updated_at TEXT NOT NULL
             );
-            CREATE UNIQUE INDEX IF NOT EXISTS fixture_round_pair
-                ON fixtures(season_year, round_no, clan_a, clan_b);
             CREATE TABLE IF NOT EXISTS fixture_history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 fixture_id TEXT NOT NULL,
@@ -121,6 +121,8 @@ def initialize() -> None:
         }
         if "season_key" not in fixture_columns:
             connection.execute("ALTER TABLE fixtures ADD COLUMN season_key TEXT")
+        connection.execute("DROP INDEX IF EXISTS fixture_round_pair")
+        connection.execute("CREATE UNIQUE INDEX IF NOT EXISTS fixture_season_round_pair ON fixtures(season_key,round_no,clan_a,clan_b)")
         # Tag existing active-season rows by their season windows, not generated IDs.
         start = min(s for s, _ in ROUND_WINDOWS.values()).isoformat()
         end = max(e for _, e in ROUND_WINDOWS.values()).isoformat()
@@ -178,7 +180,7 @@ def _row_dict(row: Optional[sqlite3.Row]) -> Optional[dict[str, Any]]:
 def get_fixture(fixture_id: str) -> Optional[dict[str, Any]]:
     initialize_schema_only()
     with _connect() as connection:
-        return _row_dict(connection.execute("SELECT * FROM fixtures WHERE fixture_id = ?", (fixture_id,)).fetchone())
+        return _row_dict(connection.execute("SELECT * FROM fixtures WHERE fixture_id = ? AND season_key = ?", (fixture_id, SEASON_KEY)).fetchone())
 
 
 def fixture_for_deleted_event(event_id: int) -> Optional[dict[str, Any]]:
@@ -218,6 +220,8 @@ def _update(fixture_id: str, fields: dict[str, Any], *, action: Optional[str] = 
     if not fields:
         return
     initialize_schema_only()
+    if get_fixture(fixture_id) is None:
+        raise ValueError("Fixture is not in the active season")
     fields = dict(fields)
     fields["updated_at"] = _now_iso()
     assignments = ", ".join(f"{key} = ?" for key in fields)
@@ -296,6 +300,9 @@ def sync_event(
     event_id: int,
     start_time_utc: Optional[str],
 ) -> Optional[str]:
+    event_start = _parse_iso(start_time_utc)
+    if event_start is None or not (min(s for s, _ in ROUND_WINDOWS.values()) <= event_start.date() <= max(e for _, e in ROUND_WINDOWS.values())):
+        return None  # Old Discord events must not attach to next season's same matchup.
     fixture = find_fixture(round_no, clan_a, clan_b)
     if fixture is None:
         return None
@@ -322,8 +329,8 @@ def unlink_event_for_reorganisation(event_id: int, *, actor: Optional[str] = Non
     initialize_schema_only()
     with _connect() as connection:
         row = connection.execute(
-            "SELECT fixture_id FROM fixtures WHERE scheduled_event_id = ?",
-            (int(event_id),),
+            "SELECT fixture_id FROM fixtures WHERE scheduled_event_id = ? AND season_key = ?",
+            (int(event_id), SEASON_KEY),
         ).fetchone()
     if row is None:
         return None
@@ -348,7 +355,7 @@ def repair_deleted_event_relinks() -> int:
     repairs: list[int] = []
     with _connect() as connection:
         rows = connection.execute(
-            "SELECT fixture_id, scheduled_event_id FROM fixtures WHERE scheduled_event_id IS NOT NULL"
+            "SELECT fixture_id, scheduled_event_id FROM fixtures WHERE scheduled_event_id IS NOT NULL AND season_key=?", (SEASON_KEY,)
         ).fetchall()
         for row in rows:
             latest = connection.execute(
@@ -502,8 +509,8 @@ def update_score_status(match_id: str, status: str, *, confirmed_at: Optional[st
     initialize_schema_only()
     with _connect() as connection:
         row = connection.execute(
-            "SELECT fixture_id, score_status, score_confirmed_at FROM fixtures WHERE score_match_id = ?",
-            (match_id,),
+            "SELECT fixture_id, score_status, score_confirmed_at FROM fixtures WHERE score_match_id = ? AND season_key = ?",
+            (match_id, SEASON_KEY),
         ).fetchone()
     if row is not None:
         if row["score_status"] == status and (confirmed_at is None or row["score_confirmed_at"] == confirmed_at):

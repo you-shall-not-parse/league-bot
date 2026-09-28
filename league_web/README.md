@@ -172,3 +172,43 @@ Import URLs must resolve to public addresses. Redirects are disabled, downloads
 are limited to 8 MiB and requests time out after 30 seconds. Import failures are
 logged with `Player stats import failed`; fix the source link/export and the next
 retry will import it.
+
+
+## Season 2 archive and October Season 3 rollover
+
+The July 20-September 27 competition was previously labelled `2026-s3` in SQL.
+The rollover corrects it to `2026-s2`, retaining its division membership, standings,
+fixtures, results and imported player stats. Trophy Room reads these archived tables.
+Historical names and division assignments are preserved exactly as stored.
+
+Stop the bot **before deploying this update**, deploy the full repository code and
+assets (preserve the VPS `.env` and `data/league.db`), then run on the VPS:
+
+```bash
+cd ~/league-bot
+venv/bin/python -m season_rollover
+venv/bin/python -m season_rollover --apply
+```
+
+The first command previews the change. The second creates
+`data/league.before-season3-october-2026.db`, archives the old competition in a
+transaction, and initializes 20 fresh fixtures and zero standings for October 5
+through December 13. Restart only after the command completes successfully:
+
+```bash
+sudo systemctl start leaguebot.service
+```
+
+Rerunning rollover after success does not reset new results. Normal startup refuses
+to mix the old July season with the new configuration until rollover has completed.
+Organiser threads and streamer requests are removed from active tracking but retained
+in archive SQL namespaces. Existing board message IDs are reused. Old Discord threads
+are not deleted. On first board refresh the bot scans its latest 500 channel messages,
+recovers missing round-message IDs and deletes only duplicate bot control-board posts;
+it requires Read Message History access. Round refreshes are serialized.
+
+New clans: SoV (`1545832802010800239`, `:SoV:`), 50A
+(`1552446051926147102`, `:50a:`). ZR48 retains role `1462558355166986261`
+and the existing `:48th:` emoji and logo. PG60 and 7CIE are excluded from the new
+roster. Optional new logo files are `SoV.png` and `50A.png` in both
+`cogs/clan_logos/` and `league_web/static/clans/`.

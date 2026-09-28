@@ -29,6 +29,21 @@ def public_data(data_dir=None, rulebook_path=None):
         scoreboard = read_scoreboard(connection)
         season_clans = [dict(row) for row in connection.execute(
             "SELECT * FROM season_clans WHERE season_key=? ORDER BY division,name", (SEASON_KEY,))]
+        archives = []
+        for previous in connection.execute("SELECT * FROM seasons WHERE season_key<>? ORDER BY starts_on DESC", (SEASON_KEY,)):
+            archive_divisions = {}
+            for row in connection.execute("""SELECT c.name,c.division,s.w,s.l,s.played,s.maps_for,s.maps_against
+                    FROM season_clans c JOIN standings s ON s.season_key=c.season_key AND s.role_id=CAST(c.role_id AS TEXT)
+                    WHERE c.season_key=?""", (previous['season_key'],)):
+                entry = dict(row)
+                division_name = entry.pop('division')
+                entry['difference'] = entry['maps_for'] - entry['maps_against']
+                archive_divisions.setdefault(division_name, []).append(entry)
+            for rows in archive_divisions.values():
+                rows.sort(key=lambda r: (r['maps_for'], r['difference'], r['w'], -r['l'], r['name'].lower()), reverse=True)
+            if archive_divisions:
+                archives.append(dict(season_number=previous['number'], starts_on=previous['starts_on'], ends_on=previous['ends_on'],
+                                     divisions=[dict(name=name, rows=rows) for name, rows in archive_divisions.items()]))
     finally:
         connection.close()
     division_clans = {}
@@ -88,12 +103,13 @@ def public_data(data_dir=None, rulebook_path=None):
     return {
         "league_name": season["name"],
         "season_number": season["number"],
-        "clan_logos": {clan: f"/assets/clans/{clan}.png" for clans in division_clans.values() for clan in clans},
+        "clan_logos": {p.stem: f"/assets/clans/{p.name}" for p in (ROOT / "league_web" / "static" / "clans").glob("*.png")},
         "updated_at": datetime.now(timezone.utc).isoformat(),
         "source": "live",
         "season": int(season["starts_on"][:4]),
         "divisions": divisions, "fixtures": fixtures,
         "rounds": [{"number": n, "start": min(f["window_start"] for f in fixtures if f["round"] == n), "end": max(f["window_end"] for f in fixtures if f["round"] == n)} for n in sorted({f["round"] for f in fixtures})],
         "player_leaderboard": player_board,
+        "season_archives": archives,
         "rulebook": json.loads(rules.read_text(encoding="utf-8")),
     }

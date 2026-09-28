@@ -17,7 +17,7 @@ async def main(base_url="http://127.0.0.1:7030"):
         await page.locator("table").first.wait_for()
         assert await page.locator("tbody tr").count() == 10
         await expect(page).to_have_title("The Allied Front")
-        await expect(page.locator("tbody .clan-logo")).to_have_count(10)
+        await expect(page.locator("tbody .clan-logo")).to_have_count(sum(r["name"] in report["clan_logos"] for d in report["divisions"] for r in d["rows"]))
         await page.wait_for_function("Array.from(document.querySelectorAll('.league-logo, .clan-logo')).every(img => img.complete && img.naturalWidth > 0)")
         for removed in ("SEASON 3", "Season 3", "PUBLIC LEAGUE BOARD", "COMMUNITY COMPETITION", "Follow the campaign.", "Independent community league"):
             await expect(page.locator("body")).not_to_contain_text(removed)
@@ -71,6 +71,10 @@ async def main(base_url="http://127.0.0.1:7030"):
         await expect(page.locator('.trophy-card').nth(1)).to_contain_text('Axis Division Champions')
         await expect(page.locator('.trophy-card').last).to_contain_text('7PD')
         await expect(page.locator('.trophy-card').last).to_contain_text('Allied Division Champions')
+        if report.get('season_archives'):
+            await expect(page.locator('.season-archive')).to_have_count(len(report['season_archives']))
+            await expect(page.locator('.season-archive').first).to_contain_text('Season 2')
+            await page.screenshot(path=str(output / 'preview-trophy-archive.png'), full_page=True)
         await page.reload(wait_until='networkidle')
         await expect(page.locator('.trophy-card')).to_have_count(3)
         await page.set_viewport_size({"width": 390, "height": 844})
