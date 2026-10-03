@@ -107,7 +107,8 @@ function trophyRoom() {
 
 function rulebook() {
   const rules = data.rulebook;
-  return heading('THE RULES OF ENGAGEMENT',escapeHTML(rules.title),escapeHTML(rules.version)) + `<div class="rulebook">${rules.published ? rules.sections.map((s,i)=>`<details ${i===0?'open':''}><summary>${String(i+1).padStart(2,'0')} &nbsp; ${escapeHTML(s.title)}</summary><p>${escapeHTML(s.body)}</p></details>`).join('') : empty('The official rulebook has not been published here yet. League organisers will provide the approved rules before publication.')}</div>`;
+  const poster = rules.published && rules.poster ? `<p><a href="/assets/${encodeURIComponent(rules.poster)}" target="_blank" rel="noopener">View original Season 3 rules poster</a></p>` : '';
+  return heading('THE RULES OF ENGAGEMENT',escapeHTML(rules.title),escapeHTML(rules.version)) + poster + `<div class="rulebook">${rules.published ? rules.sections.map((s,i)=>`<details ${i===0?'open':''}><summary>${String(i+1).padStart(2,'0')} &nbsp; ${escapeHTML(s.title)}</summary><p>${escapeHTML(s.body)}</p></details>`).join('') : empty('The official rulebook has not been published here yet. League organisers will provide the approved rules before publication.')}</div>`;
 }
 
 function bindCalendar() {

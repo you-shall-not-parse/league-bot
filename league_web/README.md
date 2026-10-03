@@ -95,7 +95,11 @@ Edit `rulebook.json` to publish approved rules. Content is rendered as plain tex
 }
 ```
 
-No rule content is invented. The initial page says awaiting publication.
+The Season 3 rules are transcribed from `data/Allied Front Rules S3_page-0001.jpg`,
+including the numbered rules and penalties. The optional `poster` field names
+the original image in `static/`, linked from the Rulebook tab. Deploy
+`rulebook.json`, `static/app.js` and `static/allied-front-rules-s3.jpg` together.
+The top player list referenced in rule 2.8 is not included in the supplied poster.
 
 ## Cloudflare entry challenge (required before public launch)
 
