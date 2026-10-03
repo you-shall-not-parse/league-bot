@@ -2,27 +2,5 @@
   "title": "The Allied Front Rules",
   "published": true,
   "version": "Season 3",
-  "poster": "allied-front-rules-s3.jpg",
-  "sections": [
-    {
-      "title": "Rounds & Scheduling",
-      "body": "• Each round has a 2-week window.\n\n• Fixtures are automated and in ⚔️ | season-fixtures.\n\n• Fixtures are organised by using 1️⃣ | organise-fixture.\n\n• Once you have organised your fixture it magically appears in 🗓️ | match-calendar."
-    },
-    {
-      "title": "Maps, Sides & Servers",
-      "body": "• One map per round — all teams play the same map then the map leaves the pool.\n\n• Maps are chosen by spin the wheel before the round commences and all maps except Stalingrad, Driel, Remagen, Smolensk, Tobruk and El Alamein.\n\n• Mid-point: Spin the Wheel/League-Bot Randomiser.\n\n• Sides and Server host decided by using 1️⃣ | organise-fixture.\n\n• Fixture player numbers between 30–50 players as agreed with opponent using 1️⃣ | organise-fixture."
-    },
-    {
-      "title": "Combat",
-      "body": "1.1 Only Static HQ2 guns are permitted, outfield guns are not permitted.\nPenalty: -2 Points.\n\n1.2 Static HQ2 artillery players are unkillable and must stay on the artillery gun for the duration of the game. If the gunner or loader is killed return to the gun without returning fire.\nPenalty: -2 Points.\n\n1.3 Nodes cannot be destroyed or dismantled by the opposing team.\nPenalty: -2 Points.\n\n1.4 No win condition within the first 30 minutes of the match.\nPenalty: -3 Points.\n\n1.5 An artillery glitch may occur where rounds fail to fire. Operators are permitted to leave the gun provided a clip is submitted post-match showing the gun not leading 3 times. Penalty shall incur if footage is not provided.\nPenalty: -2 Points.\n\n1.6 Guidance: Nodes must be built in an HQ sector that is away from vehicle spawns in order to prevent 1.3."
-    },
-    {
-      "title": "Scores & Standings",
-      "body": "• Scores are submitted by using 2️⃣ | submit-results. Scoring is based solely on objectives scored per match.\n\n• League table ordered by total objectives accumulated and is automated in 🏆 | league-leaderboard.\n\n• The team with the better W/L record will be awarded the higher seed, if this is tied then a final match shall be played to determine the first-place seed.\n\n• Team drop-outs during the season: admin will look for a replacement team, if none found, that teams game scores will be replaced with a 5-0 loss for all remaining games."
-    },
-    {
-      "title": "Anti-Cheat",
-      "body": "2.1 Admin cam logs / player_ids may be requested by the opposing team within 12 hours of the match having been played.\nFailure to present if requested: -2 Points.\n\n2.2 Deliberate clipping inside an asset that prevents you being shot but allows you to shoot out is prohibited, this does not include terrain clipping as a result of natural gameplay. The use of rooftops is permitted provided the above rule is not violated.\nPenalty: -2 Points.\n\n2.3 The use of cronus/XIM or other controller emulator is prohibited.\nPenalty: Disqualification if presented with sufficient evidence.\n\n2.4 The use of HLL utilities bot is prohibited.\nPenalty: -2 Points.\n\n2.5 No hired guns from inside or outside the league, all players must be a member of your clan. Passive checks will be conducted post-match on the stats links by the league admins to check for compliance to the hired guns rule.\nFirst offense: -2 Points.\nFollowing offenses: 0-5 Loss.\n\n2.6 Players transferred between clans competing in the current season are banned from playing for their new clan until the following season. They must have played at least one match in TAF for the old clan.\nFirst offense: -2 Points.\nFollowing offenses: 0-5 Loss.\n\n2.7 Streaming is permitted but must not be live and must be agreed before the match with opponent.\nPenalty: -3 Points.\n\n2.8 3 players only from the top player list frozen 28th Sept 2026 (supplied attached) are permitted per team and must be declared by teams participating no later than Saturday 11am UK time 3rd of October.\nPenalty: -3 Points."
-    }
-  ]
+  "poster": "allied-front-rules-s3.jpg"
 }

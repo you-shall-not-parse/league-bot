@@ -84,22 +84,15 @@ The theme uses red `#C02B10` with lighter red for readable small text. Clan logo
 `static/clans/` are copied from the bot's `cogs/clan_logos/` assets and appear in
 standings and fixture/result rows.
 
-Edit `rulebook.json` to publish approved rules. Content is rendered as plain text:
+The Rulebook tab displays the supplied Season 3 rules image directly, scaled to
+fit the screen. Clicking the poster opens the original at full size.
+`rulebook.json` selects the image with its `poster` field and controls publication
+with `published`. The original is copied unchanged from
+`data/Allied Front Rules S3_page-0001.jpg` to
+`static/allied-front-rules-s3.jpg`.
 
-```json
-{
-  "title": "League rulebook",
-  "published": true,
-  "version": "2026 season · Version 1.0",
-  "sections": [{"title": "Section title", "body": "Approved rule text here."}]
-}
-```
-
-The Season 3 rules are transcribed from `data/Allied Front Rules S3_page-0001.jpg`,
-including the numbered rules and penalties. The optional `poster` field names
-the original image in `static/`, linked from the Rulebook tab. Deploy
-`rulebook.json`, `static/app.js` and `static/allied-front-rules-s3.jpg` together.
-The top player list referenced in rule 2.8 is not included in the supplied poster.
+Deploy `rulebook.json`, `static/app.js`, `static/app.css` and
+`static/allied-front-rules-s3.jpg` together.
 
 ## Cloudflare entry challenge (required before public launch)
 

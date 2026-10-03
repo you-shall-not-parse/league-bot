@@ -107,8 +107,10 @@ function trophyRoom() {
 
 function rulebook() {
   const rules = data.rulebook;
-  const poster = rules.published && rules.poster ? `<p><a href="/assets/${encodeURIComponent(rules.poster)}" target="_blank" rel="noopener">View original Season 3 rules poster</a></p>` : '';
-  return heading('THE RULES OF ENGAGEMENT',escapeHTML(rules.title),escapeHTML(rules.version)) + poster + `<div class="rulebook">${rules.published ? rules.sections.map((s,i)=>`<details ${i===0?'open':''}><summary>${String(i+1).padStart(2,'0')} &nbsp; ${escapeHTML(s.title)}</summary><p>${escapeHTML(s.body)}</p></details>`).join('') : empty('The official rulebook has not been published here yet. League organisers will provide the approved rules before publication.')}</div>`;
+  const posterUrl = rules.poster ? `/assets/${encodeURIComponent(rules.poster)}` : '';
+  return heading('THE RULES OF ENGAGEMENT',escapeHTML(rules.title),escapeHTML(rules.version)) + (rules.published && posterUrl
+    ? `<div class="rulebook-poster"><a href="${posterUrl}" target="_blank" rel="noopener" aria-label="Open rules poster at full size"><img src="${posterUrl}" alt="The Allied Front Rules — Season 3" width="2481" height="3509"></a><p><a href="${posterUrl}" target="_blank" rel="noopener">Open full-size rules poster</a></p></div>`
+    : empty('The official rulebook has not been published here yet. League organisers will provide the approved rules before publication.'));
 }
 
 function bindCalendar() {
