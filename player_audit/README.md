@@ -39,6 +39,20 @@ unresolved, all later fixture appearances are listed as unresolved;
 no new-clan attribution is invented. Full evidence is attached as a text file.
 There are no automatic penalties or role changes.
 
+The same scan also checks each match appearance against
+`data/TAF Banned Players List.html` (or that filename under `LEAGUE_DATA_DIR`).
+Only exact persistent T17 IDs match, regardless of the current username. A single
+match is enough; no clan change or resolved side is required. Crossed-out rows and
+approved players are exempt. The supplied list uses `class="declared"` and an
+`approval` badge for these exemptions; inline line-through styles and HTML
+`s`/`strike`/`del` tags are also recognized. Exemptions apply to the player ID.
+The list is reloaded every scan, so updating approvals withdraws existing findings
+without downloading the stats again. Missing or invalid lists fail the scan and
+are logged, rather than silently clearing existing alerts. Banned-player reviews
+use the same private moderator channel, with the listed name, match name, ID,
+fixture, stats link and evidence attachment. They are deduplicated per player and
+league match, and corrected/deleted stats records withdraw obsolete findings.
+
 ## Modules and SQL
 
 - `ingestion.py`: bounded public CRCON/Bifrost HTTP fetching; reuses existing public
@@ -62,7 +76,8 @@ SQL persistence is recovered via a footer marker in the last 100 channel message
 ## Deployment and commands
 
 Deploy `player_audit/`, `cogs/playeraudit.py`, `main.py`, `league_storage.py` and
-`season_rollover.py`; restart `leaguebot.service`. No season reset or manual SQL
+`season_rollover.py`, plus `TAF Banned Players List.html` in the bot's data directory;
+restart `leaguebot.service`. No season reset or manual SQL
 migration is required. The bot needs View Channel, Read Message History, Send
 Messages, Embed Links and Attach Files in channel `1554218876760236123`.
 Both slash commands use the existing scoreboard admin permission check.
@@ -75,8 +90,9 @@ when available. For external/historical sample links not in this bot's records:
 ```
 
 These parameters identify the two fixture participants, **not** which side the
-player was on. TEST alerts go to the same moderator channel with real evidence;
-no dummy finding is manufactured when the comparison does not qualify. Tests use
+player was on. TEST alerts go to the same moderator channel with real evidence.
+The supplied match exports are also checked against the current banned-player list.
+No dummy finding is manufactured when the comparison does not qualify. Tests use
 an isolated in-memory comparison, permit historical dates, and never write to live
 appearances/aliases. Production checks remain restricted to the current season.
 

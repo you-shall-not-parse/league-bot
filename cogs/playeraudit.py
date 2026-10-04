@@ -8,7 +8,7 @@ from data_paths import data_path
 from league_config import GUILD_ID
 from league_storage import connect, SEASON_KEY
 from cogs.scoreboard import _admin_app_command_check
-from player_audit import identity, ingestion, rules, reporting
+from player_audit import identity, ingestion, rules, reporting, banned
 from player_audit.config import ALERT_CHANNEL_ID, clan
 from player_audit.service import AuditService
 
@@ -112,14 +112,15 @@ class PlayerAuditCog(commands.Cog):
                     raise ValueError('Supply two different match links.')
                 # Diagnostic run is isolated: historical sample links never enter live-season history.
                 rows = [r for source,export,context in results for r in identity.appearances(export,context,source,enforce_dates=False)]
-                findings = rules.findings(rows)
+                entries = await asyncio.to_thread(banned.load)
+                findings = rules.findings(rows) + banned.findings(rows, entries)
                 channel = await self.alert_channel()
                 ids = []
                 for finding in findings:
                     ids.append(await reporting.publish(channel,finding,'diagnostic',test=True))
                 if not findings:
                     shared = {p['player_id'] for p in results[0][1]['players']} & {p['player_id'] for p in results[1][1]['players']}
-                    await interaction.followup.send(f'No configured clan-change finding. Shared persistent IDs: {len(shared)}. The two fixtures may share a clan, have no common player IDs, or not match the configured rules. No alert was fabricated; production history was unchanged.',ephemeral=True)
+                    await interaction.followup.send(f'No configured clan-change or banned-player finding. Shared persistent IDs: {len(shared)}. The two fixtures may share a clan, have no common player IDs, or not match the configured rules. Production history was unchanged.',ephemeral=True)
                 else:
                     await interaction.followup.send(f'Sent {len(ids)} clearly labelled TEST alert(s) to <#{ALERT_CHANNEL_ID}>. Production history was unchanged.',ephemeral=True)
             except (ValueError,TypeError,KeyError) as exc:

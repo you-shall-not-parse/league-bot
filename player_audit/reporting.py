@@ -9,6 +9,16 @@ def clean(value, limit=200):
 
 
 def evidence(finding):
+    if finding.get('kind') == 'banned':
+        row = finding['appearance']
+        return '\n'.join([finding['reason'], 'Persistent ID: ' + finding['player_id'],
+            'List: TAF Banned Players List.html', 'Listed name: ' + finding['entry']['name'],
+            'Match player name: ' + row['name'],
+            f"Clan: {row['clan'] or 'Unresolved side'} | Opponent: {row['opponent'] or 'Unresolved side'}",
+            f"Fixture: {row['clan_a']} vs {row['clan_b']}",
+            'Date (UTC): ' + row['played_at'], 'League match: ' + row['match_id'],
+            'Source match: ' + row['source_match_id'], 'Stats: ' + row['source'],
+            'Reason: ' + row['confidence']])
     lines = [finding['reason'], 'Persistent ID: ' + finding['player_id'], 'Days between matches: ' + str(finding['days'])]
     for label, row in [('OLD',finding['old']),('NEW',finding['new']),*[('SUBSEQUENT',r) for r in finding['subsequent']]]:
         lines += ['', label, f"Player: {row['name']}", f"Clan: {row['clan'] or 'Unresolved side'} | Opponent: {row['opponent'] or 'Unresolved side'}",
@@ -19,6 +29,15 @@ def evidence(finding):
 
 
 def render(finding, season, *, test=False):
+    if finding.get('kind') == 'banned':
+        row = finding['appearance']
+        embed = discord.Embed(title=('TEST - ' if test else '') + 'Banned player eligibility review', color=0xC02B10,
+            description=f"**{clean(row['name'])}**\nPersistent ID: `{clean(finding['player_id'],128)}`\n{clean(finding['reason'])}\nSeason: {clean(season)}")
+        embed.add_field(name='TAF banned-player list', value=f"Listed name: **{clean(finding['entry']['name'])}**\nNo crossed-out or approved exemption.", inline=False)
+        embed.add_field(name='Match appearance', value=f"{row['played_at'][:10]} UTC\nClan: {clean(row['clan'] or 'Side unresolved',32)}\nFixture: {clean(row['clan_a'],32)} vs {clean(row['clan_b'],32)}\nLeague match: {clean(row['match_id'])}\nSource match: {clean(row['source_match_id'])}\n{row['source'][:500]}", inline=False)
+        embed.add_field(name='Confidence / reason', value='Exact persistent T17 ID match; usernames do not establish identity. Clan is shown only when the saved sides and strong export team evidence agree. Review evidence; no automatic penalties.', inline=False)
+        embed.set_footer(text=('test:' if test else 'audit:')+season+':'+finding['key'])
+        return embed, discord.File(io.BytesIO(evidence(finding).encode('utf-8')), filename='player-evidence.txt')
     embed = discord.Embed(title=('TEST - ' if test else '') + 'Player eligibility review', color=0xC02B10,
         description=f"**{clean(finding['new']['name'])}**\nPersistent ID: `{clean(finding['player_id'],128)}`\n{clean(finding['reason'])}\nSeason: {clean(season)}")
     for label,row in [('Earlier appearance',finding['old']),('Later appearance',finding['new'])]:
@@ -61,7 +80,7 @@ async def retract(channel, stored):
     for message_id in json.loads(stored['message_ids']):
         try:
             message = await channel.fetch_message(message_id)
-            embed = discord.Embed(title='Clan-change finding withdrawn', description='The current stats links, match records or rules no longer support this finding. Previous evidence has been removed.', color=0x808080)
+            embed = discord.Embed(title='Player eligibility finding withdrawn', description='The current stats links, match records, banned-player list or rules no longer support this finding. Previous evidence has been removed.', color=0x808080)
             await message.edit(content=None,embed=embed,attachments=[],allowed_mentions=discord.AllowedMentions.none())
         except discord.NotFound:
             pass

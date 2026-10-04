@@ -4,7 +4,7 @@ import json
 from datetime import datetime, timezone
 import logging
 from league_storage import connect, SEASON_KEY
-from . import identity, ingestion, rules, reporting
+from . import identity, ingestion, rules, reporting, banned
 
 
 class AuditService:
@@ -35,7 +35,7 @@ class AuditService:
             identity.reconcile(db,SEASON_KEY)
             rows = [dict(r) for r in db.execute('SELECT * FROM audit_appearances WHERE season=?', (SEASON_KEY,))]
             saved = {r['finding_key']:dict(r) for r in db.execute('SELECT * FROM audit_alerts WHERE season=?', (SEASON_KEY,))}
-            return rules.findings(rows),saved
+            return rules.findings(rows) + banned.findings(rows, banned.load()),saved
 
     def record_alert(self, key, fingerprint, message_id):
         with connect(self.path) as db:
